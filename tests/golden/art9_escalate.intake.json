@@ -1,0 +1,9 @@
+{
+  "vendor_name": "HealthCo",
+  "service_description": "Clinical note summariser",
+  "intended_use": "Clinician drafting aid",
+  "data_processed": "Patient health records",
+  "has_dpa": false,
+  "special_category_data": true,
+  "automated_decision_making": false
+}

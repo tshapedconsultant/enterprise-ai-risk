@@ -1,0 +1,7 @@
+{
+  "vendor_name": "OpenAI",
+  "service_description": "GPT API",
+  "intended_use": "Employee copilot",
+  "data_processed": "Employee prompts that may include customer names and emails",
+  "has_dpa": false
+}

@@ -1,0 +1,27 @@
+{
+  "decision": "PENDING REVIEW",
+  "residual_risk": "Low",
+  "risk_score": 2,
+  "workflow_status": "HUMAN_REVIEW_REQUIRED",
+  "engine_version": "deterministic-rules-v1",
+  "decision_basis": [
+    "RULE-DECISION-PENDING-REVIEW",
+    "RULE-DPA-DECLARED-UNVERIFIED",
+    "RULE-DPIA-NOT-INFERRED",
+    "RULE-MODEL-NAMED-NO-EVAL",
+    "RULE-RETENTION-DECLARED",
+    "RULE-SECURITY-PACK-MISSING",
+    "RULE-TRANSFERS-DECLARED",
+    "RULE-WORKFLOW-JIRA-GATES"
+  ],
+  "controls_triggered": [
+    "CTRL-DPA",
+    "CTRL-SOC2"
+  ],
+  "ticket_departments": [
+    "parent",
+    "legal",
+    "infosec",
+    "aigov"
+  ]
+}

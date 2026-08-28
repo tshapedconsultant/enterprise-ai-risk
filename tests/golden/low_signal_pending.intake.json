@@ -1,0 +1,11 @@
+{
+  "vendor_name": "LintBot",
+  "service_description": "CI linter wrapper",
+  "intended_use": "Build pipeline",
+  "data_processed": "Repository source files and compiler logs",
+  "has_dpa": true,
+  "geographic_scope": "EU",
+  "international_transfers": "none",
+  "retention_period": "90 days",
+  "model_provider": "self-hosted rules"
+}

@@ -1,0 +1,23 @@
+﻿# Demo / PoC. Do not scale replicas — assessments are in-memory per process.
+# WEBHOOK_EVENT_STORE is SQLite for Jira event IDs only; still use one replica until Postgres.
+services:
+  risk-console:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      JIRA_BASE_URL: ${JIRA_BASE_URL:-}
+      JIRA_USER_EMAIL: ${JIRA_USER_EMAIL:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      JIRA_WEBHOOK_SECRET: ${JIRA_WEBHOOK_SECRET:?JIRA_WEBHOOK_SECRET is required}
+      JIRA_APPROVER_DOMAIN: ${JIRA_APPROVER_DOMAIN:?JIRA_APPROVER_DOMAIN is required}
+      JIRA_PROJECT_KEY: ${JIRA_PROJECT_KEY:-AIGOV}
+      REQUIRE_ASSESSMENT_AUTH: ${REQUIRE_ASSESSMENT_AUTH:-true}
+      WEBHOOK_EVENT_STORE: /data/webhook-events.sqlite
+    volumes:
+      - webhook-events:/data
+
+volumes:
+  webhook-events:

@@ -1,0 +1,32 @@
+{
+  "decision": "ESCALATE TO AI GOVERNANCE / LEGAL / SECURITY",
+  "residual_risk": "Critical",
+  "risk_score": 5,
+  "workflow_status": "HUMAN_REVIEW_REQUIRED",
+  "engine_version": "deterministic-rules-v1",
+  "decision_basis": [
+    "RULE-DECISION-ESCALATE-PERSONAL-NO-DPA",
+    "RULE-DPA-MISSING",
+    "RULE-DPIA-REQUIRED-MISSING",
+    "RULE-MODEL-UNNAMED",
+    "RULE-PERSONAL-DATA",
+    "RULE-RETENTION-MISSING",
+    "RULE-SECURITY-PACK-MISSING",
+    "RULE-TRANSFERS-UNKNOWN",
+    "RULE-WORKFLOW-JIRA-GATES"
+  ],
+  "controls_triggered": [
+    "CTRL-DPA",
+    "CTRL-DPIA",
+    "CTRL-TRANSFERS",
+    "CTRL-RETENTION",
+    "CTRL-SOC2",
+    "CTRL-MODEL"
+  ],
+  "ticket_departments": [
+    "parent",
+    "legal",
+    "infosec",
+    "aigov"
+  ]
+}

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Enterprise AI Vendor Risk Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <!--
+      Two-panel layout (v1.7) for business, legal, and compliance users:
+        - Left: vendor intake — high-contrast fields; privacy/DPIA in <details>
+        - Right: pinned decision bar → audit grid + gate chips → tabbed report
+                 → structured assistant card → chat (composer pinned)
+      The workspace column is the only scroll container on the right. Report rows
+      use progressive disclosure (<details>): headline visible, rationale on expand.
+    -->
+    <div class="app">
+      <aside class="panel intake">
+        <header class="brand">
+          <p class="eyebrow">Responsible AI governance</p>
+          <h1>Vendor assessment</h1>
+          <p class="lede">
+            Complete the form, run the assessment, and read the decision at the top right.
+            Then ask the assistant questions about the same report.
+          </p>
+        </header>
+
+        <p class="hint" id="example-hint">
+          Fields are pre-filled with an <strong>example</strong>. Change them before evaluating a real case.
+          Do not paste passwords or medical records.
+        </p>
+
+        <form id="assess-form">
+          <p class="section-label">Minimum required data</p>
+          <label>
+            <span class="field-label">Vendor name <span class="req" title="Required">*</span></span>
+            <input name="vendor_name" required placeholder="e.g. OpenAI" value="OpenAI" autocomplete="organization" />
+          </label>
+          <label>
+            <span class="field-label">Service description <span class="req">*</span></span>
+            <textarea name="service_description" required rows="2" placeholder="Which product or API you plan to use">GPT API and ChatGPT Enterprise</textarea>
+          </label>
+          <label>
+            <span class="field-label">Intended use in the organization <span class="req">*</span></span>
+            <textarea name="intended_use" required rows="2" placeholder="How people will use it">Internal copilot for writing and code assistance</textarea>
+          </label>
+          <label>
+            <span class="field-label">Data that will be processed <span class="req">*</span></span>
+            <span class="field-help">State whether personal, customer, or health data may be involved.</span>
+            <textarea name="data_processed" required rows="2" placeholder="Type of data — not actual content">Employee prompts that may include customer names and internal documents</textarea>
+          </label>
+
+          <label class="check">
+            <input type="checkbox" name="has_dpa" />
+            <span>
+              A DPA / data processing agreement is <strong>signed and archived</strong>
+              <span class="field-help">Check only if the contract is signed with our entity. A vendor web page is not enough.</span>
+            </span>
+          </label>
+
+          <details class="more">
+            <summary>Privacy and DPIA (GDPR) — a DPA alone is not enough</summary>
+            <label>
+              <span class="field-label">Is a DPIA / privacy impact assessment required?</span>
+              <select name="privacy_assessment_required">
+                <option value="">Infer from facts</option>
+                <option value="true">Yes, required</option>
+                <option value="false">No, not required</option>
+              </select>
+            </label>
+            <label>
+              <span class="field-label">DPIA status</span>
+              <select name="dpia_status">
+                <option value="">unknown</option>
+                <option value="not_started">not_started</option>
+                <option value="in_progress">in_progress</option>
+                <option value="completed">completed</option>
+                <option value="not_required">not_required</option>
+              </select>
+            </label>
+            <label>
+              <span class="field-label">DPIA reference</span>
+              <input name="dpia_reference" placeholder="e.g. DPIA-2026-014" />
+            </label>
+            <label>
+              <span class="field-label">Processing purposes</span>
+              <input name="processing_purposes" placeholder="e.g. employee assistance, not customer decisions" />
+            </label>
+            <label>
+              <span class="field-label">Data subjects</span>
+              <input name="data_subjects" placeholder="e.g. employees, customers" />
+            </label>
+            <label>
+              <span class="field-label">International transfers</span>
+              <input name="international_transfers" placeholder="e.g. unknown, none, US with SCCs" />
+            </label>
+            <label>
+              <span class="field-label">Retention period</span>
+              <input name="retention_period" placeholder="e.g. 30 days / until deletion" />
+            </label>
+            <label>
+              <span class="field-label">Declared privacy risk level (does not override the engine)</span>
+              <input name="privacy_risk_level" placeholder="e.g. High" />
+            </label>
+            <label class="check">
+              <input type="checkbox" name="special_category_data" />
+              <span>Special category data (GDPR Art. 9: health, etc.)</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" name="automated_decision_making" />
+              <span>Automated decisions with legal or similar effect</span>
+            </label>
+          </details>
+
+          <details class="more">
+            <summary>Additional information (recommended)</summary>
+            <label>
+              <span class="field-label">Business owner</span>
+              <input name="business_owner" placeholder="e.g. Engineering leadership" />
+            </label>
+            <label>
+              <span class="field-label">Geographic scope</span>
+              <input name="geographic_scope" placeholder="e.g. European Union and United States" />
+            </label>
+            <label>
+              <span class="field-label">Model or model provider</span>
+              <input name="model_provider" placeholder="e.g. OpenAI GPT via API" />
+            </label>
+            <label>
+              <span class="field-label">Integration approach</span>
+              <input name="integration_architecture" placeholder="e.g. HTTPS API from internal system" />
+            </label>
+            <label>
+              <span class="field-label">Regulatory context</span>
+              <input name="regulatory_context" placeholder="e.g. GDPR, EU AI Act" />
+            </label>
+          </details>
+
+          <div class="form-actions">
+            <button type="submit" id="assess-btn">Assess vendor</button>
+            <button type="button" id="reset-btn" class="secondary">Clear example</button>
+          </div>
+        </form>
+
+        <p id="llm-status" class="status" role="status">Checking console mode…</p>
+      </aside>
+
+      <main class="panel workspace" id="workspace">
+        <section class="summary" id="summary" hidden>
+          <div class="summary-card">
+            <p class="eyebrow">Decision</p>
+            <p id="decision" class="decision"></p>
+            <p id="decision-code" class="code-hint"></p>
+          </div>
+          <div class="summary-card">
+            <p class="eyebrow">Residual risk</p>
+            <p id="residual" class="residual"></p>
+          </div>
+          <div class="summary-card">
+            <p class="eyebrow">Vendor</p>
+            <p id="vendor-chip"></p>
+          </div>
+          <div class="summary-actions">
+            <button type="button" id="copy-btn" class="secondary">Copy report</button>
+          </div>
+        </section>
+
+        <section class="audit" id="audit" hidden>
+          <p class="eyebrow">Audit trail — engine triage + human Jira gates</p>
+          <dl class="audit-grid" id="audit-grid"></dl>
+          <div class="gates" id="gates-row"></div>
+        </section>
+
+        <section class="report" id="report" hidden>
+          <div class="tabs" role="tablist" aria-label="Assessment detail">
+            <button
+              type="button"
+              class="tab"
+              role="tab"
+              id="tab-findings"
+              aria-controls="panel-findings"
+              aria-selected="true"
+            >
+              Findings <span class="tab-count" id="count-findings">0</span>
+            </button>
+            <button
+              type="button"
+              class="tab"
+              role="tab"
+              id="tab-gaps"
+              aria-controls="panel-gaps"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              Missing evidence <span class="tab-count" id="count-gaps">0</span>
+            </button>
+            <button
+              type="button"
+              class="tab"
+              role="tab"
+              id="tab-tickets"
+              aria-controls="panel-tickets"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              Jira orchestration <span class="tab-count" id="count-tickets">0</span>
+            </button>
+          </div>
+
+          <div class="tab-panel" id="panel-findings" role="tabpanel" aria-labelledby="tab-findings" tabindex="0">
+            <ul id="findings-list" class="disclosure-list"></ul>
+          </div>
+          <div class="tab-panel" id="panel-gaps" role="tabpanel" aria-labelledby="tab-gaps" tabindex="0" hidden>
+            <p class="panel-note">Missing evidence never reduces residual risk. Expand a row for the source.</p>
+            <ul id="gaps-list" class="disclosure-list"></ul>
+          </div>
+          <div class="tab-panel" id="panel-tickets" role="tabpanel" aria-labelledby="tab-tickets" tabindex="0" hidden>
+            <p class="panel-note">Parent Epic plus Legal / SecOps / AI Governance Tasks. Closing them is not a business approval.</p>
+            <ul id="tickets-list" class="disclosure-list"></ul>
+          </div>
+        </section>
+
+        <section class="chat">
+          <div id="empty-state" class="empty-state">
+            <p class="empty-title">No assessment yet</p>
+            <p>
+              Complete the form on the left and click <strong>Assess vendor</strong>.
+              You will see the decision, findings, and can ask follow-up questions here.
+            </p>
+          </div>
+          <div id="messages" class="messages" hidden></div>
+          <div class="chat-dock">
+            <div id="suggestions" class="suggestions" hidden></div>
+            <form id="chat-form" class="composer">
+              <label class="sr-only" for="chat-input">Question about the assessment</label>
+              <input
+                id="chat-input"
+                autocomplete="off"
+                disabled
+                placeholder="Run an assessment first to enable questions"
+              />
+              <button type="submit" id="chat-btn" disabled>Send</button>
+            </form>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
