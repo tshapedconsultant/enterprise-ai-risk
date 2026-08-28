@@ -16,6 +16,7 @@ dgom-updates/
 htmlcov/
 *.lnk
 *.pdf
+artifacts/
 tests/logs/*.log
 tests/logs/*.sqlite
 !tests/logs/.gitkeep

@@ -140,6 +140,7 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@adevinta.com` emails are 
 | `app/logging_config.py` | Central logging (`LOG_LEVEL`, `LOG_FORMAT`, `LOG_FILE`) |
 | `static/` | Web console (`index.html`, `styles.css`, `app.js`) — intake form, tabbed report, audit chips, chat |
 | `Dockerfile` / `docker-compose.yml` | Container image (see [DEPLOYMENT.md](docs/DEPLOYMENT.md)) |
+| `.github/workflows/ci.yml` | Test gate, evidence-pack artifact upload, production deploy gate |
 | `tests/` | pytest: API, engine, webhooks, LLM mock, store, logging, golden regression |
 
 ## Documentation

@@ -119,11 +119,19 @@ Tests set `LOG_LEVEL=DEBUG` and `LOG_FILE=tests/logs/pytest-app.log` in `tests/c
 | Live OpenAI | Chat client is mocked; fallback and redaction (including JSON/query false positives) are covered |
 | Multi-worker store | In-memory singleton by design (ADR-6) |
 
-## CI
+## CI/CD
 
-GitHub Actions runs the suite on push and pull request: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+GitHub Actions: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 
-```yaml
-- run: pip install -r requirements.txt -r requirements-dev.txt
-- run: pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+| Job | When | Gate |
+|-----|------|------|
+| `test` | every push and PR | pytest with coverage ≥ 80% |
+| `evidence-pack` | after `test` | Export `evidence_pack` JSON + SHA-256; upload as a GitHub Actions artifact (`evidence-pack`, 30 days) |
+| `deploy` | `main` push only | GitHub Environment **production** (add required reviewers under Settings → Environments). Re-checks the pack hash, then `docker build`. |
+
+Local pack export (same command CI uses):
+
+```bash
+python scripts/export_evidence_pack.py --intake tests/golden/personal_no_dpa.intake.json --out-dir artifacts
+sha256sum -c artifacts/evidence-pack.sha256
 ```

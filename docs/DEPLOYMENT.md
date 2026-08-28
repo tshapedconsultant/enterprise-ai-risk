@@ -133,6 +133,16 @@ Outbound: container needs egress HTTPS to `JIRA_BASE_URL`.
 
 Inbound: Jira Cloud must reach `/api/v1/webhooks/jira`. Local `docker compose` on a laptop is not reachable unless you use a tunnel; Cloud Run / ECS / GKE with a public HTTPS URL is.
 
+## CI/CD
+
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) is the pipeline example:
+
+1. **Test gate** — pytest must pass (coverage ≥ 80%) or nothing else runs.
+2. **Evidence pack artifact** — CI exports `GovernanceEvidencePack` JSON from a golden intake (`scripts/export_evidence_pack.py`) and uploads `artifacts/evidence-pack.json` plus `evidence-pack.sha256` to GitHub Actions artifact storage.
+3. **Production environment gate** — on `main` only, the `deploy` job uses the GitHub Environment named `production`. Add **required reviewers** in the repo (Settings → Environments) so a human must approve before the job runs. The job re-verifies the SHA-256 and `docker build`s the image. It does not push to a registry until you add those credentials.
+
+This is artifact storage + a deploy gate, not a substitute for PostgreSQL evidence persistence.
+
 ## What this image is not
 
 - Not multi-tenant
