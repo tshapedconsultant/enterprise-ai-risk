@@ -95,7 +95,10 @@ def test_assessment_audit_endpoint_verifies_chain(client, sample_intake, monkeyp
     )
     assert audit.status_code == 200
     assert audit.json()["verification"]["valid"] is True
+    assert audit.json()["verification"]["anchors"]["missing_external_anchor"] is False
     assert audit.json()["events"][0]["event_type"] == "assessment.created"
+    assert audit.json()["anchors"]
+    assert "Assessment-Root-Hash:" in assess.json()["jira_tickets"][0]["fields"]["description"]
     assert "access_token" not in str(audit.json())
 
 

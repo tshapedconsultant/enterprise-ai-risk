@@ -5,6 +5,15 @@ semantic versioning for releases. The FastAPI `version` field is `1.4.0`.
 
 ## [Unreleased]
 
+### Added
+
+- External audit-root anchors: on each hash-chain append the current root is
+  recorded in `audit_anchors` and published to configured sinks (`jira` by
+  default as a dry-run payload; optional Rekor and S3 Object Lock).
+  `GET /api/v1/assessments/{id}/audit` now reports whether the head matches a
+  successful external ref. This is not a legal WORM guarantee unless Rekor or
+  S3 Object Lock is actually used.
+
 ### Changed
 
 - Documentation aligned with shipped behaviour: YAML GDPR triage,

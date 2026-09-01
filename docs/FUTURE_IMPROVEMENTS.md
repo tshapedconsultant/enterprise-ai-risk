@@ -19,11 +19,12 @@ This document does **not** authorize skipping the deterministic engine or return
 | 2 | EvidenceItem separate from Findings | Yes. Finding ≠ proof. | Done (`evidence_items`) |
 | 3 | LLM must not set risk/decision | Yes. Without this it is a compliance chatbot. | Done (`app/scoring.py`) |
 | 4 | DecisionRecord / audit trail | Yes. Enterprise audit and sales. | Done + Jira human gates (v1.5) |
-| 5 | Replace in-memory store | Yes. | SQLite persistence and tamper-evident hash chain done; PostgreSQL tenancy + externally immutable/WORM audit storage remain. |
+| 5 | Replace in-memory store | Yes. | SQLite persistence, hash chain, and external root-hash anchors (Jira/Rekor/S3) done; PostgreSQL tenancy remains. |
 
 The evidence pack is generated as JSON. SQLite now persists it across restart
-and records hash-chained audit events. Remaining: immutable PDF, per-tenant
-authorization, and an external append-only/WORM store (the SQLite chain is not
+and records hash-chained audit events plus external root-hash anchors (Jira
+dry-run by default). Remaining: immutable PDF, per-tenant authorization, and
+production WORM (Rekor or S3 Object Lock actually enabled; Jira dry-run is not
 that).
 
 ## 2. Item 5 — session store (production)

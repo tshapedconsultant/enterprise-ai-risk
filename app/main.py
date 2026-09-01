@@ -39,6 +39,7 @@ from app.jira_workflow import (
     jira_configured,
     parse_webhook_event,
     publish_to_jira,
+    stamp_root_hash,
 )
 from app.frameworks import framework_status, stamp_assessment
 from app.llm import answer_question, llm_enabled, run_assessment
@@ -131,6 +132,7 @@ async def health_details(
         "webhook_event_store": store.store_mode(),
         "data_store": store.store_mode(),
         "api_auth_required": settings.api_auth_required,
+        "audit_anchor_sinks": settings.parsed_audit_anchor_sinks(),
         "frameworks": framework_status(),
     }
     return payload
@@ -147,6 +149,7 @@ async def public_config() -> dict:
         "llm_enabled": llm_enabled(),
         "jira_outbound": jira_configured(),
         "data_store": store.store_mode(),
+        "audit_anchor_sinks": settings.parsed_audit_anchor_sinks(),
         "frameworks": framework_status(),
     }
 
@@ -184,7 +187,7 @@ async def get_assessment_audit(
     assessment_id: str,
     x_assessment_token: Optional[str] = Header(default=None, alias="X-Assessment-Token"),
 ) -> dict:
-    """Return hash-chained audit events plus an integrity verification result."""
+    """Return hash-chained audit events, external anchors, and integrity verification."""
     validated = validate_assessment_id(assessment_id)
     assert validated is not None
     if not store.token_matches(validated, x_assessment_token):
@@ -195,6 +198,7 @@ async def get_assessment_audit(
         "assessment_id": validated,
         "verification": store.verify_audit_chain(validated),
         "events": store.list_audit_events(validated),
+        "anchors": store.list_audit_anchors(validated),
     }
 
 
@@ -250,6 +254,13 @@ async def assess_vendor_risk(payload: VendorInput, request: Request):
             ]
         token = store.save(payload, assessment)
         meta = assessment.assessment_metadata
+        head = store.latest_audit_head(meta.assessment_id)
+        stamp_root_hash(assessment.jira_tickets, head["root_hash"], head["seq"])
+        if assessment.evidence_pack:
+            assessment.evidence_pack.jira_tickets = [
+                ticket.model_dump() for ticket in assessment.jira_tickets
+            ]
+        store.replace_assessment_json(assessment)
         published_keys = [k for k in (jira_result.get("keys") or []) if k]
         if not published_keys:
             published_keys = [
@@ -258,6 +269,8 @@ async def assess_vendor_risk(payload: VendorInput, request: Request):
                 if ticket.fields.issue_key
             ]
         store.bind_jira_issues(published_keys, meta.assessment_id)
+        parent_key = jira_result.get("parent") or (published_keys[0] if published_keys else None)
+        store.retry_pending_anchors(meta.assessment_id, issue_key=parent_key)
         logger.info(
             "assess-vendor complete",
             extra={
@@ -379,6 +392,8 @@ async def jira_webhook(
 
     if parsed.key:
         store.bind_jira_issue(parsed.key, assessment_id)
+    if parsed.root_hash:
+        store.note_inbound_jira_hash(assessment_id, parsed.root_hash, parsed.key)
     record = updated.decision_record
     return {
         "ok": True,
@@ -390,6 +405,7 @@ async def jira_webhook(
         "secops_approver": record.secops_approver if record else None,
         "aigov_approver": record.aigov_approver if record else None,
         "human_decision": record.human_decision if record else None,
+        "observed_root_hash": parsed.root_hash or None,
     }
 
 

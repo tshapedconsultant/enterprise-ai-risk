@@ -23,6 +23,9 @@ def test_settings_exposes_defaults(monkeypatch):
     assert settings.openai_model == "gpt-4o-mini"
     assert settings.api_rate_limit_per_minute == 60
     assert settings.session_ttl_seconds == 24 * 3600
+    assert settings.parsed_audit_anchor_sinks() == ["jira"]
+    assert settings.rekor_sink_enabled() is False
+    assert settings.s3_sink_enabled() is False
     assert isinstance(settings, Settings)
 
 
@@ -36,6 +39,20 @@ def test_validate_startup_requires_webhook_secret(monkeypatch):
     monkeypatch.setenv("JIRA_WEBHOOK_SECRET", "")
     with pytest.raises(ConfigurationError, match="JIRA_WEBHOOK_SECRET"):
         validate_startup()
+
+
+def test_invalid_audit_anchor_sinks_fail_settings(monkeypatch):
+    monkeypatch.setenv("AUDIT_ANCHOR_SINKS", "jira,blockchain")
+    with pytest.raises(ConfigurationError, match="AUDIT_ANCHOR_SINKS"):
+        get_settings()
+
+
+def test_rekor_public_url_only_when_enabled(monkeypatch):
+    monkeypatch.delenv("REKOR_URL", raising=False)
+    monkeypatch.setenv("REKOR_ENABLED", "false")
+    assert get_settings().effective_rekor_url() == ""
+    monkeypatch.setenv("REKOR_ENABLED", "true")
+    assert get_settings().effective_rekor_url() == "https://rekor.sigstore.dev"
 
 
 def test_invalid_trusted_proxies_fail_settings(monkeypatch):

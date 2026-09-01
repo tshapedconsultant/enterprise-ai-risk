@@ -2,7 +2,7 @@
 
 **Status:** Demo / PoC. This is not a penetration-test report. It lists **governance-specific** threats and what this codebase actually does about them.
 
-Related: [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md) ADR-2, ADR-12, ADR-13.
+Related: [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md) ADR-2, ADR-12, ADR-13, ADR-16.
 
 ## Trust boundaries
 
@@ -95,9 +95,12 @@ required.
 
 - No allowlist of Jira / Atlassian egress IPs.
 - SQLite is a single-deployment durable store. Its event hash chain detects
-  altered links/payloads and checks a same-database head/count, but it is not
-  PostgreSQL RLS or external immutable/WORM storage; a database administrator
-  can rewrite both events and checkpoint.
+  altered links/payloads and checks a same-database head/count. That is not
+  WORM: a database administrator can rewrite events, checkpoint, and the local
+  `audit_anchors` table together. External attesters are Jira (default dry-run
+  hash copy), optional Rekor, and optional S3 Object Lock. Jira dry-run is not
+  legally WORM; a Jira admin can still edit tickets. Rekor is the stronger
+  public log when `REKOR_URL` or `REKOR_ENABLED` is set.
 - Knowing a valid mailbox on `JIRA_APPROVER_DOMAIN` is enough to pass the domain check once the HMAC secret is stolen. The allow-list still has to match.
 
 ## Rate limiting and proxies

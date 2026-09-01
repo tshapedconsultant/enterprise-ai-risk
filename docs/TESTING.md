@@ -35,6 +35,7 @@ With live log output on the console (`log_cli=true` in `pytest.ini`). A full DEB
 | `tests/test_regression.py` | Golden snapshots under `tests/golden/` |
 | `tests/test_api.py` | Health/config, static console, assess, ID-scoped restore, API/assessment tokens, chat |
 | `tests/test_store.py` | SQLite round-trip/reopen, token retention, workflow update, Jira map, event replay, hash-chain verify/tamper |
+| `tests/test_audit_anchor.py` | Jira root-hash payload, missing external anchor, mocked Rekor/S3, webhook correlation |
 | `tests/test_frameworks.py` | Mandatory GDPR YAML engine plus configurable optional alignment sections |
 | `tests/test_config.py` | Startup `ConfigurationError` for domain, webhook secret, trusted proxies |
 | `tests/test_redaction.py` | Table-driven `redact_secrets` / `redact_mapping` (JSON, query, headers, false positives) |

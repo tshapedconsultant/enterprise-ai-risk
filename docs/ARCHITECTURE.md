@@ -184,8 +184,16 @@ truncation.
 This closes restart loss for a single deployment, not production tenancy:
 SQLite has no tenant ownership/RLS. The hash chain is tamper-evident, not
 tamper-proof: an attacker able to rewrite the whole database can rewrite its
-checkpoint too. It is not equivalent to PostgreSQL RLS or external
-immutable/WORM event storage.
+checkpoint and the local `audit_anchors` table too. External attesters are
+configured via `AUDIT_ANCHOR_SINKS` (default `jira` dry-run; optional Rekor
+and S3 Object Lock). Jira dry-run is not WORM. See ADR-16.
+
+## External audit-root anchors (`app/audit_anchor.py`)
+
+On each chain append the process records `seq`, `root_hash`, `prev_root`,
+timestamp, sink, and status in `audit_anchors`, then calls configured sinks.
+`GET /api/v1/assessments/{id}/audit` verifies (1) local chain integrity and
+(2) whether the current head matches the last successful external ref.
 
 ## Framework catalog (`app/frameworks.py`)
 

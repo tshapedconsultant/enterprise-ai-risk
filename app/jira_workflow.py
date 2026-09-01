@@ -40,8 +40,16 @@ logger = get_logger("app.jira_workflow")
 
 DONE_STATUSES = {"done", "cerrado", "closed", "approved", "aprobado", "resolved"}
 ASSESSMENT_ID_PREFIX = "Assessment-ID:"
+ASSESSMENT_ROOT_HASH_PREFIX = "Assessment-Root-Hash:"
+AUDIT_ROOT_HASH_PREFIX = "Audit-Root-Hash:"
+AUDIT_SEQ_PREFIX = "Audit-Seq:"
 JIRA_TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 REQUIRED_DEPARTMENTS = [Department.LEGAL.value, Department.INFOSEC.value, Department.AIGOV.value]
+_HASH_LINE_PREFIXES = (
+    ASSESSMENT_ROOT_HASH_PREFIX,
+    AUDIT_ROOT_HASH_PREFIX,
+    AUDIT_SEQ_PREFIX,
+)
 
 
 @dataclass
@@ -55,12 +63,148 @@ class ParsedWebhook:
     issue_type: str = ""
     project_key: str = ""
     actor_email: str = ""
+    root_hash: str = ""
+    audit_seq: Optional[int] = None
 
 
 def _assessment_id_footer(assessment_id: Optional[str]) -> str:
     if not assessment_id:
         return ""
     return f"\n{ASSESSMENT_ID_PREFIX} {assessment_id}"
+
+
+def _prefixed_line(text: str, prefix: str) -> Optional[str]:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped.split(prefix, 1)[1].strip()
+    return None
+
+
+def strip_root_hash_lines(text: str) -> str:
+    """Remove previously stamped root-hash lines so re-stamping stays idempotent."""
+    kept = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if any(stripped.startswith(prefix) for prefix in _HASH_LINE_PREFIXES):
+            continue
+        kept.append(line)
+    return "\n".join(kept).rstrip()
+
+
+def root_hash_footer(root_hash: str, seq: int) -> str:
+    return (
+        f"\n{ASSESSMENT_ROOT_HASH_PREFIX} {root_hash}"
+        f"\n{AUDIT_ROOT_HASH_PREFIX} {root_hash}"
+        f"\n{AUDIT_SEQ_PREFIX} {seq}"
+    )
+
+
+def stamp_root_hash(tickets: List[JiraTicket], root_hash: str, seq: int) -> None:
+    """Append Assessment-Root-Hash / Audit-Root-Hash to each ticket description."""
+    if not root_hash:
+        return
+    block = root_hash_footer(root_hash, seq)
+    for ticket in tickets:
+        description = strip_root_hash_lines(ticket.fields.description or "")
+        ticket.fields.description = description + block
+
+
+def build_audit_anchor_payload(
+    assessment_id: str,
+    root_hash: str,
+    seq: int,
+    event_id: int,
+) -> Dict[str, Any]:
+    """Outbound Jira comment/ticket body that copies the chain root into Jira."""
+    description = (
+        "External audit chain anchor. This is not a department gate.\n"
+        "Rewriting the local SQLite ledger without this Jira copy will diverge.\n"
+        f"{ASSESSMENT_ID_PREFIX} {assessment_id}"
+        f"{root_hash_footer(root_hash, seq)}\n"
+        f"Audit-Event-ID: {event_id}"
+    )
+    return {
+        "summary": f"[Audit-Root-Hash] {assessment_id} seq {seq}",
+        "description": description,
+        "labels": ["ai-governance", "audit-anchor"],
+    }
+
+
+def publish_audit_anchor(
+    assessment_id: str,
+    root_hash: str,
+    seq: int,
+    event_id: int,
+    issue_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Copy the current audit root hash into Jira (live comment) or a dry-run payload.
+
+    Dry-run still embeds the hash so demos can show the external-attester shape
+    without credentials. That is not WORM; a Jira admin can still edit the issue.
+    """
+    payload = build_audit_anchor_payload(assessment_id, root_hash, seq, event_id)
+    if not jira_configured():
+        logger.info(
+            "jira audit anchor dry-run",
+            extra={
+                "event": "jira.anchor",
+                "published": False,
+                "dry_run": True,
+                "assessment_id": assessment_id,
+                "seq": seq,
+            },
+        )
+        return {
+            "published": False,
+            "dry_run": True,
+            "reason": "Jira credentials not configured (dry-run payload only)",
+            "destination": "jira",
+            "issue_key": issue_key,
+            "payload": payload,
+        }
+    if not issue_key:
+        return {
+            "published": False,
+            "dry_run": False,
+            "reason": "no_issue_key",
+            "destination": "jira",
+            "issue_key": None,
+            "payload": payload,
+        }
+
+    settings = get_settings()
+    base = settings.jira_base_url.rstrip("/")
+    auth = (settings.jira_bot_email, settings.jira_api_token)
+    with httpx.Client(timeout=JIRA_TIMEOUT) as client:
+        response = client.post(
+            f"{base}/rest/api/3/issue/{issue_key}/comment",
+            json={"body": _adf(payload["description"])},
+            auth=auth,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        response.raise_for_status()
+        comment_id = str((response.json() or {}).get("id") or "")
+    logger.info(
+        "jira audit anchor comment posted",
+        extra={
+            "event": "jira.anchor",
+            "published": True,
+            "assessment_id": assessment_id,
+            "issue_key": issue_key,
+            "seq": seq,
+        },
+    )
+    return {
+        "published": True,
+        "dry_run": False,
+        "reason": None,
+        "destination": "jira",
+        "issue_key": issue_key,
+        "comment_id": comment_id,
+        "payload": payload,
+    }
 
 
 def _assignee_account_ids_from_env() -> Dict[str, str]:
@@ -442,6 +586,18 @@ def _is_jira_cloud_payload(body: Dict[str, Any]) -> bool:
     return isinstance(issue, dict) and isinstance(issue.get("fields"), dict)
 
 
+def _description_text(fields: Dict[str, Any], body: Dict[str, Any]) -> str:
+    description = fields.get("description") or body.get("description") or ""
+    if isinstance(description, dict):
+        texts: List[str] = []
+        for block in description.get("content", []):
+            for node in block.get("content", []):
+                if node.get("type") == "text":
+                    texts.append(node.get("text", ""))
+        return "\n".join(texts)
+    return str(description or "")
+
+
 def parse_webhook_event(body: Dict[str, Any]) -> ParsedWebhook:
     issue = body.get("issue") or body
     fields = issue.get("fields") or {}
@@ -464,25 +620,27 @@ def parse_webhook_event(body: Dict[str, Any]) -> ParsedWebhook:
     project = (fields.get("project") or {}).get("key") or ""
     if not project and key and "-" in key:
         project = key.split("-", 1)[0]
+    description = _description_text(fields, body)
     assessment_id = (
         body.get("assessment_id")
         or issue.get("assessment_id")
         or fields.get("customfield_assessment_id")
+        or _prefixed_line(description, ASSESSMENT_ID_PREFIX)
     )
-    if not assessment_id:
-        description = fields.get("description")
-        if isinstance(description, dict):
-            texts: List[str] = []
-            for block in description.get("content", []):
-                for node in block.get("content", []):
-                    if node.get("type") == "text":
-                        texts.append(node.get("text", ""))
-            description = "\n".join(texts)
-        if isinstance(description, str) and ASSESSMENT_ID_PREFIX in description:
-            for line in description.splitlines():
-                if line.strip().startswith(ASSESSMENT_ID_PREFIX):
-                    assessment_id = line.split(ASSESSMENT_ID_PREFIX, 1)[1].strip()
-                    break
+    root_hash = (
+        body.get("root_hash")
+        or body.get("audit_root_hash")
+        or _prefixed_line(description, AUDIT_ROOT_HASH_PREFIX)
+        or _prefixed_line(description, ASSESSMENT_ROOT_HASH_PREFIX)
+        or ""
+    )
+    seq_raw = body.get("audit_seq") or _prefixed_line(description, AUDIT_SEQ_PREFIX)
+    audit_seq: Optional[int] = None
+    if seq_raw not in (None, ""):
+        try:
+            audit_seq = int(seq_raw)
+        except (TypeError, ValueError):
+            audit_seq = None
     return ParsedWebhook(
         key=str(key),
         status=str(status),
@@ -493,6 +651,8 @@ def parse_webhook_event(body: Dict[str, Any]) -> ParsedWebhook:
         issue_type=str(issue_type),
         project_key=str(project),
         actor_email=actor,
+        root_hash=str(root_hash or ""),
+        audit_seq=audit_seq,
     )
 
 

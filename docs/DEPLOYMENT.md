@@ -44,7 +44,8 @@ Pass secrets as environment variables. Never `COPY .env`.
 | `JIRA_APPROVER_DOMAIN` | **Yes (startup)** | Valid email domain (contains `.`, no `@`). Process exits if missing or malformed. |
 | `JIRA_WEBHOOK_SECRET` | **Yes (startup)** | Process exits if empty. Webhook POSTs also return **503** if it is cleared later. |
 | `JIRA_WEBHOOK_SECRET_PREVIOUS` | Rotation only | Optional old secret accepted during a short no-downtime rotation window; remove after callers move to active. |
-| `DATA_STORE` | Recommended | SQLite file for assessments, hash-chained audit events, access-token digests, Jira maps, and webhook IDs. Default `data/app.sqlite`; mount it durably. |
+| `DATA_STORE` | Recommended | SQLite file for assessments, hash-chained audit events, local anchor copies, access-token digests, Jira maps, and webhook IDs. Default `data/app.sqlite`; mount it durably. |
+| `AUDIT_ANCHOR_SINKS` | No | Comma-separated `jira`, `rekor`, `s3`. Default `jira` (dry-run hash copy). Rekor/S3 stay off until configured. |
 | `API_ACCESS_TOKEN` | For networked demos | Shared bearer or `X-API-Token` gate for assess/chat. It is not identity, OIDC/AD/SSO, roles, tenant ownership, or authorization. |
 | `OPENAI_API_KEY` | No | Chat LLM only |
 | `JIRA_BASE_URL` / `JIRA_API_TOKEN` | No | Dry-run tickets if unset |
@@ -60,12 +61,13 @@ Pass secrets as environment variables. Never `COPY .env`.
 |------------|-------------|
 | `DATA_STORE` is a local SQLite file | Restart-safe on a durable volume; do not share a local volume across autoscaled replicas |
 | Assessment and Jira mappings share one database | Webhooks resolve explicit UUIDs or persisted `issue.key`; no process-global latest row |
-| No `tenant_id` or RLS; audit chain/checkpoint share one DB | A process token is not production multi-tenancy; the ledger is not external immutable/WORM storage |
+| No `tenant_id` or RLS; audit chain/checkpoint share one DB | A process token is not production multi-tenancy; the ledger is not WORM without Jira/Rekor/S3 sinks |
 | No built-in TLS | Terminate TLS at the load balancer / Cloud Run / ingress |
 
 **Rule:** keep `replicas: 1` until PostgreSQL tenant isolation exists. SQLite
 solves restart loss and provides tamper evidence for ordinary event
-modification, not horizontal scaling or externally anchored immutability.
+modification. External root-hash anchors (ADR-16) are the WORM/attester path;
+Jira dry-run is not legally WORM.
 
 ### Jira webhook secret rotation
 

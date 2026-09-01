@@ -22,6 +22,10 @@ os.environ["LOG_FILE"] = str(Path(__file__).resolve().parent / "logs" / "pytest-
 os.environ["OPENAI_API_KEY"] = ""
 os.environ["JIRA_BASE_URL"] = ""
 os.environ["JIRA_API_TOKEN"] = ""
+os.environ.setdefault("AUDIT_ANCHOR_SINKS", "jira")
+os.environ["REKOR_ENABLED"] = "false"
+os.environ["REKOR_URL"] = ""
+os.environ["AUDIT_ANCHOR_S3_BUCKET"] = ""
 
 from app.logging_config import configure_logging
 

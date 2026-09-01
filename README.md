@@ -68,9 +68,11 @@ docker run --rm -p 8000:8000 --env-file .env -v enterprise-ai-risk-data:/data \
   -e DATA_STORE=/data/app.sqlite enterprise-ai-risk
 ```
 
-The console is still a **Demo / PoC**: SQLite is restart-safe and includes a
-hash-chained, tamper-evident audit ledger, but there is no SSO/RBAC, tenant
-ownership, PostgreSQL row-level security, or external immutable/WORM anchor.
+The console is still a **Demo / PoC**: SQLite is restart-safe with a
+hash-chained audit ledger. External root-hash anchors (Jira dry-run by default;
+optional Rekor or S3 Object Lock) are the WORM/attester path. Jira dry-run is
+not legally WORM. There is still no SSO/RBAC, tenant ownership, or PostgreSQL
+row-level security.
 
 ## Architecture (summary)
 
@@ -81,6 +83,7 @@ Intake form → POST /assess-vendor
     → jira_workflow          # Epic + Legal / SecOps / AI Gov Tasks
     → store (SQLite)         # assessment, token, workflow, Jira map, hash-chained audit
     → optional Jira POST     # if JIRA_BASE_URL + token set
+    → audit_anchor sinks     # Jira hash copy; optional Rekor / S3 Object Lock
 
 Jira department Task closed → POST /webhooks/jira
     → HMAC (active or previous secret) + assessment_id or issue.key map
@@ -99,7 +102,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHIT
 | `GET` | `/api/v1/health/details` | Diagnostics; gated by `HEALTH_DETAILS_TOKEN` when set |
 | `GET` | `/api/v1/config` | Non-secret UI flags and enabled frameworks |
 | `GET` | `/api/v1/assessments/{assessment_id}` | Restore one assessment by UUID + token |
-| `GET` | `/api/v1/assessments/{assessment_id}/audit` | Verify/export the assessment's hash chain |
+| `GET` | `/api/v1/assessments/{assessment_id}/audit` | Verify the hash chain and external root-hash anchors |
 | `GET` | `/api/v1/assessment/latest` | **Deprecated.** Requires `X-Assessment-Id`; never returns a global latest row |
 | `POST` | `/api/v1/assess-vendor` | Run triage; return full governance JSON |
 | `POST` | `/api/v1/chat` | Q&A for one `assessment_id` (required with default assessment auth) |
@@ -144,7 +147,8 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 | `JIRA_WEBHOOK_SECRET` | Required at startup; HMAC-SHA256 of the raw body (`X-Hub-Signature-256`) |
 | `JIRA_WEBHOOK_SECRET_PREVIOUS` | Optional previous HMAC secret during a short rotation window |
 | `JIRA_APPROVER_DOMAIN` | Required at startup; corporate mailbox suffix for human approvers |
-| `DATA_STORE` | SQLite path for assessments, hash-chained audit events, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
+| `DATA_STORE` | SQLite path for assessments, hash-chained audit events, local `audit_anchors` copies, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
+| `AUDIT_ANCHOR_SINKS` | Comma-separated `jira`, `rekor`, `s3` (default `jira`). Jira dry-run embeds the root hash without credentials; Rekor/S3 stay off until configured |
 | `API_ACCESS_TOKEN` | Shared deployment-wide bearer / `X-API-Token` gate; not identity, OIDC/AD/SSO, roles, tenant ownership, or authorization |
 | `REQUIRE_ASSESSMENT_AUTH` | Per-assessment token protection (default `true`). Restore, audit, and chat need `assessment_id` plus `X-Assessment-Token` |
 | `HEALTH_DETAILS_TOKEN` | Optional; when set, `GET /api/v1/health/details` requires `X-Health-Token` |
@@ -165,7 +169,8 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 | `app/jira_workflow.py` | Epic + department Task payloads + webhook logic |
 | `app/models.py` | Pydantic schemas (intake, assessment, Jira) |
 | `app/llm.py` | Chat only; never scores |
-| `app/store.py` | SQLite assessment, workflow, token, Jira mapping, webhook IDs, and hash-chained audit ledger |
+| `app/store.py` | SQLite assessment, workflow, token, Jira mapping, webhook IDs, hash-chained audit ledger, and `audit_anchors` |
+| `app/audit_anchor.py` | External root-hash sinks (Jira / Rekor / S3 Object Lock) |
 | `app/frameworks.py` | Framework catalog and evidence-pack scoping |
 | `app/logging_config.py` | Central logging (`LOG_LEVEL`, `LOG_FORMAT`, `LOG_FILE`) |
 | `static/` | Web console (`index.html`, `styles.css`, `app.js`) — intake form, tabbed report, audit chips, chat |
@@ -188,7 +193,7 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 
 ## Production notes
 
-- Replace SQLite with PostgreSQL + tenant row-level security, and add an external immutable/WORM audit store, before production. The current hash chain is tamper-evident in one database, not WORM.
+- Replace SQLite with PostgreSQL + tenant row-level security before multi-tenant production. The local hash chain is tamper-evident, not WORM. Jira/Rekor/S3 are the external attesters; Jira dry-run is not legally WORM, and a Jira admin can still edit tickets. Rekor is the stronger public log when enabled.
 - Map Jira `assignee.emailAddress` to `accountId` before outbound create.
 - Configure Jira automation to POST to `/api/v1/webhooks/jira` on department Task Done.
 - Outbound Jira errors do **not** fail the assessment (see [resilience](docs/ARCHITECTURE.md#outbound-resilience)).

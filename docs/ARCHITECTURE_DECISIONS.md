@@ -144,7 +144,8 @@ replica. Horizontal scaling and tenant isolation still require PostgreSQL.
 
 **Limitation:** No `tenant_id`, RLS, or per-user ownership. The live decision
 row is mutable. The hash chain is tamper-evident, not tamper-proof: an
-attacker who can rewrite the whole database can rewrite the checkpoint too.
+attacker who can rewrite the whole database can rewrite the checkpoint and
+local `audit_anchors` rows too. External attesters are ADR-16.
 
 ---
 
@@ -296,6 +297,37 @@ only when a live outbound create succeeds; dry-run tickets keep placeholders.
 
 ---
 
+## ADR-16 — External root-hash anchors (Jira / Rekor / S3)
+
+**Status:** Accepted
+
+**Decision:** Keep the SQLite hash chain as local evidence. On each append,
+publish the current head hash to configured external sinks (`AUDIT_ANCHOR_SINKS`).
+Default `jira` embeds `Assessment-Root-Hash` / `Audit-Root-Hash` in dry-run
+ticket payloads and, when credentials exist, posts a comment on the bound
+issue. Optional Rekor (`REKOR_URL` or `REKOR_ENABLED`) and S3 Object Lock are
+coded but off by default so tests stay offline.
+
+**Why:** A same-database chain detects point edits, not a total SQLite rewrite.
+Copying the root into Jira (the org's existing system of record), Rekor, or
+locked S3 objects is the remaining attester. A JSONL file next to the DB is
+not external.
+
+**Rejected:** Treating the local chain as WORM; a sidecar JSONL in `data/`;
+calling public Rekor from tests or by default.
+
+**Trade-off:** Jira dry-run works without paid cloud and is honest about not
+being WORM. A Jira admin can still edit tickets. Rekor is the stronger public
+log when enabled. S3 Object Lock Compliance is the stronger cloud WORM when
+the bucket is actually lock-configured.
+
+**Limitation:** Local `audit_anchors` rows can be rewritten with the SQLite
+file. Verification compares the chain head to the last successful sink ref
+the process recorded; proving a Rekor/S3 object still matches requires using
+that sink's own API.
+
+---
+
 ## Cross-cutting limitations (honest list)
 
 These are accepted for the current release, not accidental omissions:
@@ -307,7 +339,8 @@ These are accepted for the current release, not accidental omissions:
 | No file attachments | SOC 2 / DPA / DPIA stay unverified |
 | Alignment-only YAML (EU AI Act / ISO 42001 / NIST) | Metadata and pack sections; not framework-specific decision engines |
 | Keyword PII inference | Can miss or over-flag `data_processed` text |
-| Mutable DecisionRecord + same-DB hash chain | Tamper-evident events; not append-only WORM or external immutability |
+| Mutable DecisionRecord + same-DB hash chain | Tamper-evident events; total DB rewrite still possible without an external sink |
+| Jira dry-run anchors | Hash is copied into ticket payloads; not legally WORM; Jira admins can edit |
 | Jira assignee emails | Cloud often needs `accountId` |
 | Chat not a system of record | Trust the decision bar and JSON, not assistant prose |
 | Conservative score | High/Critical is the usual demo outcome |
@@ -342,6 +375,7 @@ All records: **Status: Accepted**.
 | Jira integration | 13 | Jira dry-run by default |
 | Jira integration | 14 | Always three department gates |
 | Persistence and API | 6 | SQLite store + hash-chained audit events |
+| Persistence and API | 16 | External root-hash anchors (Jira / Rekor / S3) |
 | Persistence and API | 7 | Pydantic as contract |
 | UX and chat | 5 | FastAPI + static UI |
 | UX and chat | 11 | Optional / mocked chat |

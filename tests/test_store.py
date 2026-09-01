@@ -145,12 +145,13 @@ def test_atomic_assessment_updater_preserves_token(monkeypatch):
     ]
     assert events[0]["previous_hash"] == ""
     assert events[1]["previous_hash"] == events[0]["event_hash"]
-    assert store.verify_audit_chain(aid) == {
-        "valid": True,
-        "event_count": 2,
-        "head_hash": events[1]["event_hash"],
-        "failed_event_id": None,
-    }
+    verification = store.verify_audit_chain(aid)
+    assert verification["valid"] is True
+    assert verification["event_count"] == 2
+    assert verification["head_hash"] == events[1]["event_hash"]
+    assert verification["failed_event_id"] is None
+    assert verification["anchors"]["missing_external_anchor"] is False
+    assert verification["anchors"]["head_matches_last_anchor"] is True
 
 
 def test_audit_chain_detects_payload_tampering(tmp_path, monkeypatch):

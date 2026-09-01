@@ -13,6 +13,24 @@ from app.logging_config import get_logger
 
 logger = get_logger("app.config")
 
+ALLOWED_AUDIT_ANCHOR_SINKS = ("jira", "rekor", "s3")
+
+
+def _parse_audit_anchor_sinks(raw: str) -> list[str]:
+    """Parse AUDIT_ANCHOR_SINKS. Empty/unset defaults to jira (offline dry-run)."""
+    parts = [part.strip().lower() for part in (raw or "").split(",")]
+    sinks: list[str] = []
+    for name in parts:
+        if not name:
+            continue
+        if name not in ALLOWED_AUDIT_ANCHOR_SINKS:
+            raise ValueError(
+                "AUDIT_ANCHOR_SINKS entries must be jira, rekor, or s3"
+            )
+        if name not in sinks:
+            sinks.append(name)
+    return sinks or ["jira"]
+
 
 class ConfigurationError(Exception):
     """Invalid or missing process configuration. Raised at startup, not mid-request."""
@@ -65,6 +83,18 @@ class Settings(BaseSettings):
     trusted_proxies: str = ""
     health_details_token: str = ""
 
+    audit_anchor_sinks: str = "jira"
+    rekor_url: str = ""
+    rekor_enabled: bool = False
+    audit_anchor_s3_bucket: str = ""
+    audit_anchor_s3_prefix: str = "audit-anchors/"
+    aws_region: str = "us-east-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_endpoint_url: str = ""
+    audit_anchor_s3_object_lock_mode: str = ""
+    audit_anchor_s3_object_lock_retain_days: int = 365
+
     @field_validator("jira_approver_domain")
     @classmethod
     def _approver_domain(cls, value: str) -> str:
@@ -100,6 +130,15 @@ class Settings(BaseSettings):
         "framework_rules_dir",
         "health_details_token",
         "trusted_proxies",
+        "audit_anchor_sinks",
+        "rekor_url",
+        "audit_anchor_s3_bucket",
+        "audit_anchor_s3_prefix",
+        "aws_region",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_endpoint_url",
+        "audit_anchor_s3_object_lock_mode",
     )
     @classmethod
     def _strip(cls, value: str) -> str:
@@ -132,6 +171,27 @@ class Settings(BaseSettings):
 
         parse_trusted_proxy_networks(value)
         return value
+
+    @field_validator("audit_anchor_sinks")
+    @classmethod
+    def _audit_anchor_sinks(cls, value: str) -> str:
+        return ",".join(_parse_audit_anchor_sinks(value))
+
+    @field_validator("audit_anchor_s3_object_lock_mode")
+    @classmethod
+    def _object_lock_mode(cls, value: str) -> str:
+        mode = (value or "").strip().upper()
+        if mode and mode not in {"COMPLIANCE", "GOVERNANCE"}:
+            raise ValueError(
+                "AUDIT_ANCHOR_S3_OBJECT_LOCK_MODE must be COMPLIANCE or GOVERNANCE"
+            )
+        return mode
+
+    @field_validator("audit_anchor_s3_prefix")
+    @classmethod
+    def _s3_prefix(cls, value: str) -> str:
+        prefix = (value or "").strip().lstrip("/")
+        return prefix or "audit-anchors/"
 
     @property
     def jira_configured(self) -> bool:
@@ -175,6 +235,23 @@ class Settings(BaseSettings):
             logger.warning("invalid JIRA_ASSIGNEE_ACCOUNT_IDS json", extra={"event": "jira.config"})
         return {}
 
+    def parsed_audit_anchor_sinks(self) -> list[str]:
+        return _parse_audit_anchor_sinks(self.audit_anchor_sinks)
+
+    def effective_rekor_url(self) -> str:
+        """Public Rekor is used only when REKOR_ENABLED is true or REKOR_URL is set."""
+        if self.rekor_url:
+            return self.rekor_url.rstrip("/")
+        if self.rekor_enabled:
+            return "https://rekor.sigstore.dev"
+        return ""
+
+    def rekor_sink_enabled(self) -> bool:
+        return "rekor" in self.parsed_audit_anchor_sinks() and bool(self.effective_rekor_url())
+
+    def s3_sink_enabled(self) -> bool:
+        return "s3" in self.parsed_audit_anchor_sinks() and bool(self.audit_anchor_s3_bucket)
+
     def parsed_allowed_approvers(self) -> dict[str, set[str]] | None:
         raw = self.jira_allowed_approvers
         if not raw:
@@ -197,6 +274,12 @@ def _to_configuration_error(exc: ValidationError) -> ConfigurationError:
             return ConfigurationError("JIRA_WEBHOOK_SECRET is required")
         if loc == "trusted_proxies":
             return ConfigurationError(err.get("msg", "TRUSTED_PROXIES is invalid"))
+        if loc == "audit_anchor_sinks":
+            return ConfigurationError(err.get("msg", "AUDIT_ANCHOR_SINKS is invalid"))
+        if loc == "audit_anchor_s3_object_lock_mode":
+            return ConfigurationError(
+                err.get("msg", "AUDIT_ANCHOR_S3_OBJECT_LOCK_MODE is invalid")
+            )
     msg = exc.errors()[0].get("msg", "invalid configuration") if exc.errors() else "invalid configuration"
     return ConfigurationError(msg)
 
@@ -244,6 +327,7 @@ def validate_startup() -> dict[str, Any]:
             "data_store": event_mode,
             "api_auth_required": settings.api_auth_required,
             "compliance_frameworks": settings.compliance_frameworks,
+            "audit_anchor_sinks": settings.parsed_audit_anchor_sinks(),
         },
     )
     return {
