@@ -42,7 +42,7 @@ Non-goals of this document:
 
 **Status:** Accepted
 
-**Decision:** `app/scoring.py` (`ENGINE_VERSION = deterministic-rules-v1`) owns residual risk (1–5) and the triage decision. `app/llm.py` may answer chat questions. It never writes `decision` or `risk_score`. `run_assessment()` always returns `used_llm_for_decision=False`.
+**Decision:** `app/scoring.py` (`ENGINE_VERSION = deterministic-rules-v1`) owns residual risk (1–5). Triage is evaluated from the validated `rules/gdpr.yaml` decision profile. Alignment YAML (EU AI Act, ISO 42001, NIST AI RMF) cannot decide. `app/llm.py` may answer chat questions. It never writes `decision` or `risk_score`. `run_assessment()` always returns `used_llm_for_decision=False`.
 
 **Why:**
 
@@ -123,21 +123,28 @@ Non-goals of this document:
 **Status:** Accepted
 
 **Decision:** `app/store.py` persists intake, assessment/evidence pack, access
-token, Jira mappings, and webhook IDs in SQLite (`DATA_STORE`). All retrieval
-is keyed by explicit `assessment_id`; there is no global latest assessment.
+token, Jira mappings, webhook IDs, and hash-chained `audit_events` in SQLite
+(`DATA_STORE`). All retrieval is keyed by explicit `assessment_id`; there is
+no global latest assessment. The current `DecisionRecord` row is still updated
+in place; each create/update also appends a hash-chained event plus a
+same-database head/count checkpoint. `GET /api/v1/assessments/{id}/audit`
+exports the chain and verification result.
 
 **Why:** Restart loss was the largest operational gap. SQLite keeps the local
 and portfolio deployment simple while making state durable and preserving
-Pydantic as the persistence boundary.
+Pydantic as the persistence boundary. The hash chain gives tamper evidence for
+ordinary event edits without claiming WORM or tenant RLS.
 
 **Rejected:** Keeping process RAM as source of truth; adding Redis as source of
-truth; claiming SQLite provides production multi-tenancy.
+truth; claiming SQLite provides production multi-tenancy, PostgreSQL RLS, or
+external immutable/WORM storage.
 
 **Trade-off:** One local SQLite file is appropriate for one deployment and
 replica. Horizontal scaling and tenant isolation still require PostgreSQL.
 
-**Limitation:** No `tenant_id`, RLS, per-user ownership, or append-only
-`DecisionRecord`. A durable file is not an immutable audit system.
+**Limitation:** No `tenant_id`, RLS, or per-user ownership. The live decision
+row is mutable. The hash chain is tamper-evident, not tamper-proof: an
+attacker who can rewrite the whole database can rewrite the checkpoint too.
 
 ---
 
@@ -225,7 +232,7 @@ replica. Horizontal scaling and tenant isolation still require PostgreSQL.
 
 **Status:** Accepted
 
-**Decision:** UI and API on one host. Jira and OpenAI credentials from the process environment or a gitignored `.env` (`python-dotenv`). `JIRA_WEBHOOK_SECRET` is required; inbound Jira events must present HMAC-SHA256 of the raw body (`X-Hub-Signature-256`). Approver emails must end with `@JIRA_APPROVER_DOMAIN` (required env; no application default).
+**Decision:** UI and API on one host. Jira and OpenAI credentials from the process environment or a gitignored `.env` (`python-dotenv`). `JIRA_WEBHOOK_SECRET` is required; inbound Jira events must present HMAC-SHA256 of the raw body (`X-Hub-Signature-256`). `JIRA_WEBHOOK_SECRET_PREVIOUS` is optional so callers can rotate without downtime; both secrets are compared, and responses never disclose which matched. Approver emails must end with `@JIRA_APPROVER_DOMAIN` (required env; no application default).
 
 **Why:** Local simplicity; webhook is otherwise an unauthenticated write to `DecisionRecord`. Domain check stops a random Gmail from “approving” Legal.
 
@@ -298,9 +305,9 @@ These are accepted for the current release, not accidental omissions:
 | Single SQLite store | Durable on one mounted replica; not tenant-isolated or horizontally scalable |
 | Shared API token, no SSO/RBAC | Cannot attribute assess/chat actions to an application user |
 | No file attachments | SOC 2 / DPA / DPIA stay unverified |
-| No EU AI Act questionnaire | Annex III is a narrative string |
+| Alignment-only YAML (EU AI Act / ISO 42001 / NIST) | Metadata and pack sections; not framework-specific decision engines |
 | Keyword PII inference | Can miss or over-flag `data_processed` text |
-| Mutable decision row | Workflow updates are durable but not append-only/tamper-evident |
+| Mutable DecisionRecord + same-DB hash chain | Tamper-evident events; not append-only WORM or external immutability |
 | Jira assignee emails | Cloud often needs `accountId` |
 | Chat not a system of record | Trust the decision bar and JSON, not assistant prose |
 | Conservative score | High/Critical is the usual demo outcome |
@@ -334,7 +341,7 @@ All records: **Status: Accepted**.
 | Jira integration | 4 | Humans approve in Jira |
 | Jira integration | 13 | Jira dry-run by default |
 | Jira integration | 14 | Always three department gates |
-| Persistence and API | 6 | SQLite assessment store |
+| Persistence and API | 6 | SQLite store + hash-chained audit events |
 | Persistence and API | 7 | Pydantic as contract |
 | UX and chat | 5 | FastAPI + static UI |
 | UX and chat | 11 | Optional / mocked chat |

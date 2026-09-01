@@ -17,8 +17,9 @@ evidence artifacts containing real personal data.
 ## Pull requests
 
 1. Open or reference an issue for behavior changes.
-2. Keep scoring deterministic: the LLM must not set risk or decisions.
-3. Add tests for API, persistence, security, or rule changes.
+2. Keep scoring deterministic: the LLM must not set risk or decisions. GDPR
+   triage lives in `rules/gdpr.yaml`; alignment YAML must not gain decision rules.
+3. Add tests for API, persistence, audit-chain, security, or rule changes.
 4. Update golden snapshots only when a scoring change is intentional and
    explained in the PR.
 5. Update Markdown documentation; do not hand-edit generated DOCX files.
@@ -27,8 +28,9 @@ evidence artifacts containing real personal data.
 ## Security
 
 Do not open a public issue for a vulnerability that could expose assessment
-data or credentials. Follow the private reporting instructions in
-[docs/SECURITY.md](docs/SECURITY.md).
+data or credentials. Report privately via
+[GitHub Security Advisories](https://github.com/tshapedconsultant/enterprise-ai-risk/security/advisories/new).
+The threat model is in [docs/SECURITY.md](docs/SECURITY.md).
 
 By contributing, you agree that your contribution is licensed under the
 repository's [MIT License](LICENSE).

@@ -16,17 +16,17 @@ This document describes **how** the system is built. For **why**, trade-offs, an
 ```
 ┌─────────────────┐     POST /assess-vendor      ┌──────────────────┐
 │  static/        │ ───────────────────────────► │  app/main.py     │
-│  index.html     │                                │  FastAPI         │
-│  app.js         │   GET /assessments/{id}        └────────┬─────────┘
+│  index.html     │   GET /config, /assessments/id │  FastAPI         │
+│  app.js         │   GET /assessments/{id}/audit  └────────┬─────────┘
 └─────────────────┘ ◄───────────────────────────────────────┤
                                                               │
                     ┌─────────────────────────────────────────┼─────────────────────────┐
                     │                                         │                         │
                     ▼                                         ▼                         ▼
              app/scoring.py                          app/jira_workflow.py          app/store.py
-             evaluate() → eval_dpa / eval_dpia / …   build_epic_and_subtasks()     SQLite repository
-             ENGINE_VERSION                        publish_to_jira()             intake + assessment
-                                                   apply_approval()
+             evaluate() + rules/gdpr.yaml            build_epic_and_subtasks()     SQLite + hash chain
+             frameworks.py (alignment YAML)          publish_to_jira()             intake, token, Jira map
+                                                   apply_approval()              audit_events / audit_heads
                     │                                         │
                     └─────────────────┬───────────────────────┘
                                       ▼
@@ -50,6 +50,12 @@ flowchart LR
 
 **Version:** `deterministic-rules-v1` (constant `ENGINE_VERSION`).
 
+Control checks and residual score live in Python. The **triage decision** is
+evaluated from the validated `rules/gdpr.yaml` profile (`mode: decision`) via
+`evaluate_gdpr_decision()`. EU AI Act, ISO/IEC 42001, and NIST AI RMF YAML
+files are `mode: alignment` only — they cannot contain decision rules and are
+never consulted for `decision` or `risk_score`.
+
 ### Control evaluation order
 
 | Control ID | Topic |
@@ -69,7 +75,7 @@ Each control produces an `EvidenceItem` and `ControlAssessment`.
 
 Base score 2, increments for personal data, no DPA, Art. 9, ADM, incomplete DPIA, unknown transfers. Capped at 5.
 
-### Triage decision matrix
+### Triage decision matrix (`rules/gdpr.yaml`)
 
 | Condition | Decision |
 |-----------|----------|
@@ -79,7 +85,7 @@ Base score 2, increments for personal data, no DPA, Art. 9, ADM, incomplete DPIA
 | Score ≥ 4, or DPIA gap, or no DPA | REQUIRES REMEDIATION |
 | Otherwise | PENDING REVIEW |
 
-**Never:** engine `APPROVE`.
+**Never:** engine `APPROVE`. Changing triage requires a YAML (and test) change, not a prompt tweak.
 
 ## Jira workflow (`app/jira_workflow.py`)
 
@@ -96,7 +102,7 @@ Base score 2, increments for personal data, no DPA, Art. 9, ADM, incomplete DPIA
 `POST /api/v1/webhooks/jira`
 
 - Parses Jira `issue.updated` or minimal test JSON.
-- Requires HMAC-SHA256 of the raw body (`X-Hub-Signature-256`), timestamp window, and unique `X-Jira-Event-Id`.
+- Requires HMAC-SHA256 of the raw body (`X-Hub-Signature-256`) using the active secret or, during rotation, `JIRA_WEBHOOK_SECRET_PREVIOUS`. Timestamp window and unique `X-Jira-Event-Id` also apply.
 - Requires status in `DONE_STATUSES` and a real open → Done transition (`previous_status` or changelog).
 - Requires the Jira **actor** (`user.emailAddress`) to match the department allow-list (`dpo@`, `secops@`, `aigov@`), not merely the corporate domain. The issue assignee is never treated as the approver.
 - Maps labels: `legal-review`, `infosec`, `ai-governance-review`.
@@ -119,7 +125,7 @@ sequenceDiagram
     API-->>Jira: 401
   else Duplicate event_id
     API-->>Jira: 200 { duplicate: true }
-  else No assessment in session
+  else Empty store or unknown assessment_id
     API-->>Jira: 404
   else Approver not on department allow-list
     API-->>Jira: 422
@@ -257,8 +263,10 @@ The user turn was the intake JSON plus the UTC date. Do not restore this path in
 
 ## Security considerations
 
-- `JIRA_WEBHOOK_SECRET` and `JIRA_APPROVER_DOMAIN` are required at process startup (`ConfigurationError` / uvicorn exit). HMAC of the raw body is mandatory on inbound webhooks.
+- `JIRA_WEBHOOK_SECRET` and `JIRA_APPROVER_DOMAIN` are required at process startup (`ConfigurationError` / uvicorn exit). HMAC of the raw body is mandatory on inbound webhooks. `JIRA_WEBHOOK_SECRET_PREVIOUS` is optional for a bounded rotation window.
 - Approvers must be on the department allow-list (`dpo@` / `secops@` / `aigov@` plus `JIRA_APPROVER_DOMAIN`, or `JIRA_ALLOWED_APPROVERS`), not merely any mailbox on the domain.
+- `GET /api/v1/config` is public and contains no secrets. `GET /api/v1/health/details` is gated by `HEALTH_DETAILS_TOKEN` when that variable is set.
+- Restore, audit export, and chat require an explicit `assessment_id`. `GET /api/v1/assessment/latest` is deprecated and still needs `X-Assessment-Id`; it never returns a global latest row.
 - Rate limits use the TCP peer unless that peer is in `TRUSTED_PROXIES`.
 - Do not commit `.env` with real tokens.
 - Chat history is client-side; not persisted server-side in this release. LLM context is redacted (heuristic + known fields).
@@ -268,6 +276,7 @@ The user turn was the intake JSON plus the UTC date. Do not restore this path in
 | Need | Approach |
 |------|----------|
 | New control | Add `eval_*()` in `app/scoring.py`, new `CTRL-*` id, rules in `decision_basis` |
+| New triage branch | Edit `rules/gdpr.yaml` (decision profile) and golden tests — not alignment YAML |
 | New department gate | Extend `departments()` + `build_epic_and_subtasks()` + `DecisionRecord` fields |
-| Persistent store | Replace `store.py`; keep Pydantic models |
+| Multi-tenant store | Replace SQLite in `store.py` with PostgreSQL + RLS; keep Pydantic models |
 | PDF export | Render `evidence_pack` JSON to template (future) |

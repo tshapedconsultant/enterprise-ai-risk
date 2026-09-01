@@ -34,12 +34,12 @@ With live log output on the console (`log_cli=true` in `pytest.ini`). A full DEB
 | `tests/test_validation.py` | Input limits, isolation, token auth, generic 500 |
 | `tests/test_regression.py` | Golden snapshots under `tests/golden/` |
 | `tests/test_api.py` | Health/config, static console, assess, ID-scoped restore, API/assessment tokens, chat |
-| `tests/test_store.py` | SQLite round-trip/reopen, token retention, workflow update, Jira map, event replay |
-| `tests/test_frameworks.py` | Mandatory GDPR engine plus configurable optional alignment sections |
+| `tests/test_store.py` | SQLite round-trip/reopen, token retention, workflow update, Jira map, event replay, hash-chain verify/tamper |
+| `tests/test_frameworks.py` | Mandatory GDPR YAML engine plus configurable optional alignment sections |
 | `tests/test_config.py` | Startup `ConfigurationError` for domain, webhook secret, trusted proxies |
 | `tests/test_redaction.py` | Table-driven `redact_secrets` / `redact_mapping` (JSON, query, headers, false positives) |
 | `tests/test_logging.py` | JSON formatter, `configure_logging`, structured `event` fields on assess/webhook paths |
-| `tests/test_security_fixes.py` | Personal-data heuristics, DPIA override, concurrent assessments |
+| `tests/test_security_fixes.py` | Dual HMAC secrets, personal-data heuristics, DPIA override, concurrent assessments |
 
 Single file:
 
@@ -120,7 +120,7 @@ Tests set `LOG_LEVEL=DEBUG` and `LOG_FILE=tests/logs/pytest-app.log` in `tests/c
 |-----|-----|
 | Live Jira REST | Outbound is mocked with `httpx.MockTransport`; no call to Atlassian |
 | Live OpenAI | Chat client is mocked; fallback and redaction (including JSON/query false positives) are covered |
-| Multi-worker database behavior | SQLite restart is tested; PostgreSQL concurrency/RLS remains future work |
+| Multi-worker database behavior | SQLite restart and hash-chain checks are tested; PostgreSQL concurrency/RLS remains future work |
 
 ## CI/CD
 

@@ -29,13 +29,13 @@ Localhost is not reachable by other people. Deploy once with [Deploy to Render](
 
 The container listens on `$PORT` (Render, Cloud Run, Railway). Default remains `8000`.
 
-Health check path: `GET /api/v1/health` → `{ "status": "ok" }`. Diagnostics (including `approver_domain` and `webhook_event_store`) are on `GET /api/v1/health/details`.
+Health check path: `GET /api/v1/health` → `{ "status": "ok" }`. Diagnostics (including `approver_domain`, `data_store`, and frameworks) are on `GET /api/v1/health/details` (optionally gated by `HEALTH_DETAILS_TOKEN`). Non-secret UI flags are on `GET /api/v1/config`.
 
 ### Image contents
 
 | In the image | Not in the image |
 |--------------|------------------|
-| `app/`, `static/`, `requirements.txt` | `.env`, `.venv`, `docs/`, tests |
+| `app/`, `rules/`, `static/`, `requirements.txt` | `.env`, `.venv`, `docs/`, tests |
 
 Pass secrets as environment variables. Never `COPY .env`.
 
@@ -51,6 +51,7 @@ Pass secrets as environment variables. Never `COPY .env`.
 | `REQUIRE_ASSESSMENT_AUTH` | Defaults **on** | Set `false` only for local demos. Console already sends `X-Assessment-Token`. |
 | `COMPLIANCE_FRAMEWORKS` | No | Enabled profile IDs; GDPR remains mandatory and decision-capable, others alignment-only. |
 | `FRAMEWORK_RULES_DIR` | No | Override `rules/`; startup fails if an enabled profile is missing or invalid. |
+| `HEALTH_DETAILS_TOKEN` | No | When set, `GET /api/v1/health/details` requires `X-Health-Token`. |
 | `TRUSTED_PROXIES` | If behind a load balancer | Comma-separated IPs/CIDRs of **the proxies**. `X-Forwarded-For` is ignored unless the TCP peer is in this list. |
 
 ## Scale and state
@@ -175,7 +176,7 @@ This is artifact storage + a deploy gate, not a substitute for PostgreSQL eviden
 
 ## What this image is not
 
-- Not multi-tenant
-- Not SSO
+- Not multi-tenant (one SQLite file, no RLS)
+- Not SSO / OIDC / RBAC (`API_ACCESS_TOKEN` is a shared gate)
 - Not a substitute for a DPO or SecOps review
-- Not production-durable (see [FUTURE_IMPROVEMENTS.md](FUTURE_IMPROVEMENTS.md) step A)
+- Not horizontally scalable; SQLite is restart-durable on one replica, not a production tenant store (see [FUTURE_IMPROVEMENTS.md](FUTURE_IMPROVEMENTS.md) step A)

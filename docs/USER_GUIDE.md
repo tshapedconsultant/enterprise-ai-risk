@@ -1,6 +1,6 @@
 ﻿# User Guide — Enterprise AI Vendor Risk Console
 
-**Version:** 1.7 · **Audience:** Business, Legal, Compliance, Security, Leadership  
+**Version:** API 1.4.0 · Console layout 1.7 · **Audience:** Business, Legal, Compliance, Security, Leadership  
 **Classification:** Internal use
 
 ## What this tool is
@@ -34,7 +34,7 @@ This is **not** legal advice and **not** a substitute for signed contracts or a 
 5. Click **Assess vendor**.
 6. Read **Decision** (triage) and **Residual risk** in the top bar, then the audit chips below it.
 7. Open the **Findings**, **Missing evidence**, and **Jira orchestration** tabs. Each row shows the headline; click a row to read the full rationale and its source.
-8. Use chat or suggestion chips for follow-up questions.
+8. Use chat or suggestion chips for follow-up questions. Chat is bound to this assessment’s ID and token; it cannot load another case as “latest”.
 
 **Tip:** Pre-filled values are an **example** (OpenAI). Clear them for a real case.
 
@@ -105,6 +105,7 @@ Residual risk **does not decrease** because the vendor claims SOC 2 or ISO on a 
 ## GDPR and DPIA
 
 - A DPA checkbox is **not** a privacy assessment.
+- GDPR triage (DPA, DPIA, Art. 9, score thresholds) comes from a validated YAML decision profile. EU AI Act, ISO/IEC 42001, and NIST AI RMF labels on the report are **alignment metadata**, not separate certification engines.
 - The engine infers whether a **DPIA** may be required from data types, special categories, and automated decisions.
 - Legal reviews DPA execution, DPIA status, transfers, and Art. 9 in their Jira Task.
 
@@ -140,12 +141,13 @@ Use **Copy report** to paste a plain-text summary into email or a ticket. Not a 
 
 ## Limitations (current release)
 
-- Assessments and workflow state persist in SQLite when `DATA_STORE` uses a durable volume.
-- `API_ACCESS_TOKEN` is a shared deployment gate, not SSO/RBAC or tenant authorization.
+- Assessments, tokens, Jira mappings, and a **hash-chained audit log** persist in SQLite when `DATA_STORE` uses a durable volume. The chain is tamper-evident, not WORM or multi-tenant.
+- Restore, audit export, and chat need an explicit assessment ID (and token when assessment auth is on). There is no shared “latest assessment”.
+- `API_ACCESS_TOKEN` is a shared deployment gate, not SSO/RBAC, OIDC, or tenant authorization.
 - No file upload for SOC 2 or DPA PDFs (status is intake-based).
-- EU AI Act classification is narrative, not a structured questionnaire yet.
+- EU AI Act / ISO 42001 / NIST sections are alignment text, not structured questionnaires or certification.
 
-See **[Future improvements](FUTURE_IMPROVEMENTS.md)** for the production roadmap (PostgreSQL, PDF pack, SSO).
+See **[Future improvements](FUTURE_IMPROVEMENTS.md)** for the production roadmap (PostgreSQL tenancy, PDF pack, SSO).
 
 ## FAQ
 
@@ -153,7 +155,7 @@ See **[Future improvements](FUTURE_IMPROVEMENTS.md)** for the production roadmap
 
 The engine does not treat a website claim of ISO 27001 (or SOC 2) as evidence. `CTRL-SOC2` stays **missing** until an independent report is in the file store — which this Demo / PoC does not yet accept as an upload.
 
-**What to do:** keep the SecOps Jira Task open. SecOps reviews the actual ISO 27001 certificate, statement of applicability, and latest audit — not a marketing page. If they accept that pack as equivalent independent assurance for this use case, they close the `infosec` ticket. Residual risk in the engine will not drop until evidence is attached in a later release; the **human** gate is what allows the parent workflow to reach Approved.
+**What to do:** keep the SecOps Jira Task open. SecOps reviews the actual ISO 27001 certificate, statement of applicability, and latest audit — not a marketing page. If they accept that pack as equivalent independent assurance for this use case, they close the `infosec` ticket. Residual risk in the engine will not drop until evidence is attached in a later release; the **human** gate is what allows the workflow to reach **Department gates completed — awaiting final approval**.
 
 SOC 2 Type II and ISO 27001 are not the same artefact. SecOps decides equivalence; the console does not.
 

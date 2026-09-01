@@ -21,7 +21,7 @@ You cannot share `http://127.0.0.1:8000` — that only works on your PC. Host th
 2. Click **Apply**. Wait until the service is live (a few minutes).
 3. Copy the URL Render shows (looks like `https://enterprise-ai-risk.onrender.com`) and send that.
 
-The first visit after idle time can take about 30 seconds (free instances sleep). Assessments use SQLite and survive an application restart when `DATA_STORE` is on persistent storage. This remains a Demo / PoC rather than a production tenant: there is no SSO/RBAC or tenant database isolation. Set `API_ACCESS_TOKEN` for any networked demo.
+The blueprint uses a paid Starter instance (persistent disk), not the free web plan, so it should not spin down the way Render's free services do. Assessments use SQLite and survive an application restart when `DATA_STORE` is on persistent storage. This remains a Demo / PoC rather than a production tenant: there is no SSO/RBAC or tenant database isolation. Set `API_ACCESS_TOKEN` for any networked demo. The generated `API_ACCESS_TOKEN` is shown once in the Render dashboard; guests need that token if the console prompts for it.
 
 Chat stays on the mock assistant unless you add `OPENAI_API_KEY` in Render → Environment.
 
@@ -76,14 +76,16 @@ ownership, PostgreSQL row-level security, or external immutable/WORM anchor.
 
 ```
 Intake form → POST /assess-vendor
-    → scoring.evaluate()     # deterministic controls, score 1–5, triage decision
+    → scoring.evaluate()     # controls + score 1–5; triage from rules/gdpr.yaml
+    → frameworks.stamp()     # GDPR enforced; EU AI Act / ISO 42001 / NIST alignment-only
     → jira_workflow          # Epic + Legal / SecOps / AI Gov Tasks
-    → store (SQLite)        # assessment, token, workflow, Jira issue mapping
+    → store (SQLite)         # assessment, token, workflow, Jira map, hash-chained audit
     → optional Jira POST     # if JIRA_BASE_URL + token set
 
 Jira department Task closed → POST /webhooks/jira
+    → HMAC (active or previous secret) + assessment_id or issue.key map
     → apply_approval()       # record allow-listed @{JIRA_APPROVER_DOMAIN} approver
-    → workflow APPROVED when all gates close
+    → DEPARTMENT_GATES_COMPLETED when all gates close (not a business APPROVE)
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHITECTURE_DECISIONS.md](docs/ARCHITECTURE_DECISIONS.md) (why, trade-offs, limitations), and [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
@@ -93,12 +95,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHIT
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/` | Web console (`static/index.html`) |
-| `GET` | `/api/v1/health` | Liveness, LLM mode, Jira outbound status |
+| `GET` | `/api/v1/health` | Public liveness (`{ "status": "ok" }` only) |
+| `GET` | `/api/v1/health/details` | Diagnostics; gated by `HEALTH_DETAILS_TOKEN` when set |
 | `GET` | `/api/v1/config` | Non-secret UI flags and enabled frameworks |
-| `GET` | `/api/v1/assessments/{assessment_id}` | Restore one assessment using its token |
+| `GET` | `/api/v1/assessments/{assessment_id}` | Restore one assessment by UUID + token |
 | `GET` | `/api/v1/assessments/{assessment_id}/audit` | Verify/export the assessment's hash chain |
+| `GET` | `/api/v1/assessment/latest` | **Deprecated.** Requires `X-Assessment-Id`; never returns a global latest row |
 | `POST` | `/api/v1/assess-vendor` | Run triage; return full governance JSON |
-| `POST` | `/api/v1/chat` | Q&A scoped to the request's `assessment_id` |
+| `POST` | `/api/v1/chat` | Q&A for one `assessment_id` (required with default assessment auth) |
 | `POST` | `/api/v1/webhooks/jira` | Inbound human approval from Jira |
 
 ### Engine triage decisions (never final APPROVE)
@@ -140,9 +144,10 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 | `JIRA_WEBHOOK_SECRET` | Required at startup; HMAC-SHA256 of the raw body (`X-Hub-Signature-256`) |
 | `JIRA_WEBHOOK_SECRET_PREVIOUS` | Optional previous HMAC secret during a short rotation window |
 | `JIRA_APPROVER_DOMAIN` | Required at startup; corporate mailbox suffix for human approvers |
-| `DATA_STORE` | SQLite path for assessments, audit events, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
+| `DATA_STORE` | SQLite path for assessments, hash-chained audit events, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
 | `API_ACCESS_TOKEN` | Shared deployment-wide bearer / `X-API-Token` gate; not identity, OIDC/AD/SSO, roles, tenant ownership, or authorization |
-| `REQUIRE_ASSESSMENT_AUTH` | Per-assessment token protection (default `true`) |
+| `REQUIRE_ASSESSMENT_AUTH` | Per-assessment token protection (default `true`). Restore, audit, and chat need `assessment_id` plus `X-Assessment-Token` |
+| `HEALTH_DETAILS_TOKEN` | Optional; when set, `GET /api/v1/health/details` requires `X-Health-Token` |
 | `COMPLIANCE_FRAMEWORKS` | GDPR decision profile plus alignment-only EU AI Act, ISO 42001, and NIST AI RMF metadata |
 | `FRAMEWORK_RULES_DIR` | Optional override for validated YAML profiles (default `rules/`) |
 | `TRUSTED_PROXIES` | Comma-separated proxy IPs/CIDRs; required before `X-Forwarded-For` is trusted |
@@ -160,7 +165,7 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 | `app/jira_workflow.py` | Epic + department Task payloads + webhook logic |
 | `app/models.py` | Pydantic schemas (intake, assessment, Jira) |
 | `app/llm.py` | Chat only; never scores |
-| `app/store.py` | SQLite assessment, workflow, token, Jira mapping, and webhook event store |
+| `app/store.py` | SQLite assessment, workflow, token, Jira mapping, webhook IDs, and hash-chained audit ledger |
 | `app/frameworks.py` | Framework catalog and evidence-pack scoping |
 | `app/logging_config.py` | Central logging (`LOG_LEVEL`, `LOG_FORMAT`, `LOG_FILE`) |
 | `static/` | Web console (`index.html`, `styles.css`, `app.js`) — intake form, tabbed report, audit chips, chat |
@@ -178,12 +183,12 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 - [Deployment](docs/DEPLOYMENT.md) — Docker, Cloud Run, ECS, Kubernetes
 - [Future improvements](docs/FUTURE_IMPROVEMENTS.md) — production roadmap
 - [V2 improvements](docs/V2_IMPROVEMENTS.md) — persistence, DPIA Workspace, evidence repository
-- Optional Word export — Markdown is canonical: `python scripts/export_docx.py docs/USER_GUIDE.md --out-dir artifacts/docs`
+- Optional Word export — Markdown is canonical; do not hand-edit `.docx`: `python scripts/export_docx.py docs/USER_GUIDE.md --out-dir artifacts/docs`
 - [Contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md), and [MIT license](LICENSE)
 
 ## Production notes
 
-- Replace SQLite with PostgreSQL + tenant row-level security and an immutable audit log before production.
+- Replace SQLite with PostgreSQL + tenant row-level security, and add an external immutable/WORM audit store, before production. The current hash chain is tamper-evident in one database, not WORM.
 - Map Jira `assignee.emailAddress` to `accountId` before outbound create.
 - Configure Jira automation to POST to `/api/v1/webhooks/jira` on department Task Done.
 - Outbound Jira errors do **not** fail the assessment (see [resilience](docs/ARCHITECTURE.md#outbound-resilience)).

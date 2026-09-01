@@ -7,6 +7,8 @@ Endpoints:
   GET  /api/v1/health/details         Diagnostic (token-protected when configured)
   GET  /api/v1/config                 Public console config (no secrets)
   GET  /api/v1/assessments/{id}       Restore one assessment by UUID
+  GET  /api/v1/assessments/{id}/audit Hash-chained audit export + verify
+  GET  /api/v1/assessment/latest      Deprecated; requires X-Assessment-Id
   POST /api/v1/assess-vendor          Deterministic triage + Jira ticket payloads
   POST /api/v1/webhooks/jira          Inbound human approvals from Jira
   POST /api/v1/chat                   Follow-up Q&A on a specific assessment

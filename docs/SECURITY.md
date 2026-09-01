@@ -69,7 +69,7 @@ flowchart LR
 | Transition | Must be open → Done. Done→Done is rejected. |
 | Project / issue | Key prefix must match `JIRA_PROJECT_KEY`. Missing department ticket ≠ approval. |
 
-Public `/api/v1/health` returns `{status: ok}` only. Diagnostic flags (`approver_domain`, `webhook_event_store`, LLM/Jira flags) live at `/api/v1/health/details`.
+Public `/api/v1/health` returns `{status: ok}` only. Diagnostic flags (`approver_domain`, `webhook_event_store`, LLM/Jira flags, frameworks) live at `/api/v1/health/details` and are gated by `HEALTH_DETAILS_TOKEN` when that variable is set. `GET /api/v1/config` is public and contains no secrets.
 
 **Still open:** SSO/RBAC and tenant isolation/RLS. `API_ACCESS_TOKEN` is one
 shared deployment-wide secret—not user identity/authentication, OIDC, AD/SSO,
@@ -120,4 +120,9 @@ Strings sent to OpenAI are passed through `redact_secrets` / `redact_mapping`: k
 
 ## Reporting
 
-This is an internal Demo / PoC. Treat findings as product bugs against the ADRs, not as a public bounty program.
+Do not open a public issue for a vulnerability that could expose assessment
+data or credentials. Use a private GitHub Security Advisory:
+https://github.com/tshapedconsultant/enterprise-ai-risk/security/advisories/new
+
+This is a Demo / PoC, not a public bounty program. Treat findings as product
+bugs against the ADRs.

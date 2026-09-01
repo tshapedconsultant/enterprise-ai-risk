@@ -1,9 +1,9 @@
 # Future improvements — AI governance control layer
 
-**Date:** 2026-08-14  
+**Date:** 2026-09-01  
 **Scope:** What is intentionally not in this Demo / PoC, and why  
-**Current product:** DPIA object, EvidenceItem, deterministic engine, DecisionRecord, Jira gates, `evidence_pack` JSON  
-**Out of scope here:** Tenant-grade PostgreSQL/immutable audit store and PDF export
+**Current product:** DPIA object, EvidenceItem, deterministic engine, DecisionRecord, Jira gates, YAML GDPR triage, hash-chained SQLite audit, `evidence_pack` JSON  
+**Out of scope here:** Tenant-grade PostgreSQL/WORM audit store and PDF export
 
 Markdown is canonical. Optional Word export:
 `python scripts/export_docx.py docs/FUTURE_IMPROVEMENTS.md --out-dir artifacts/docs`.
@@ -21,15 +21,18 @@ This document does **not** authorize skipping the deterministic engine or return
 | 4 | DecisionRecord / audit trail | Yes. Enterprise audit and sales. | Done + Jira human gates (v1.5) |
 | 5 | Replace in-memory store | Yes. | SQLite persistence and tamper-evident hash chain done; PostgreSQL tenancy + externally immutable/WORM audit storage remain. |
 
-The evidence pack is generated as JSON. SQLite now persists it across restart.
-Missing: immutable PDF, per-tenant authorization, and an append-only audit log.
+The evidence pack is generated as JSON. SQLite now persists it across restart
+and records hash-chained audit events. Remaining: immutable PDF, per-tenant
+authorization, and an external append-only/WORM store (the SQLite chain is not
+that).
 
 ## 2. Item 5 — session store (production)
 
 Today `app/store.py` persists assessments, access tokens, workflow updates, Jira
-issue mappings, and webhook IDs in SQLite (`DATA_STORE`). Restart recovery and
-explicit assessment isolation are implemented. SQLite is still not the target
-for horizontally scaled, multi-tenant production.
+issue mappings, webhook IDs, and hash-chained audit events in SQLite
+(`DATA_STORE`). Restart recovery, explicit assessment isolation, and tamper
+evidence are implemented. SQLite is still not the target for horizontally
+scaled, multi-tenant, externally immutable production.
 
 ### Target design
 
@@ -54,8 +57,9 @@ for horizontally scaled, multi-tenant production.
 
 - Restarting uvicorn does not erase assessments when `DATA_STORE` is durable. **Done.**
 - Webhooks resolve `issue.key` without a global latest assessment. **Done.**
+- Hash-chained audit events with `GET /api/v1/assessments/{id}/audit`. **Done** (tamper-evident, not WORM).
 - Two workers serve the same `assessment_id` through PostgreSQL.
-- Direct UPDATE on DecisionRecord in DB must fail or emit a tamper event.
+- Direct UPDATE on DecisionRecord in DB must fail or emit a tamper event that cannot be rewritten with the checkpoint.
 - Export pack with SHA-256 hash and engine version (`deterministic-rules-v1`, v2, …).
 
 ## 3. Evidence pack — remaining work (PDF / portal)
@@ -66,7 +70,7 @@ JSON already has the sellable tree. Operational differentiation is an artifact L
 |-------------|--------|
 | PDF or DOCX on assessment close | Corporate template, pagination, signatures. |
 | Evidence portal with NDA | Vendor SOC 2 attached, not only `missing`. |
-| Jira hardening | `accountId` mapping; webhook keyed by issue → assessment. Dry-run remains valid without credentials. |
+| Jira hardening | `accountId` mapping. Issue-key → assessment mapping and dual HMAC secrets are already in this release. Dry-run remains valid without credentials. |
 | EU AI Act Annex III | Structured questionnaire object, not a paragraph. |
 
 ## 4. Other production improvements
@@ -97,7 +101,7 @@ Effort is T-shirt size for a small senior team (not calendar weeks). XL includes
 |------|-------------|------------|--------|
 | A | PostgreSQL + `assessment_id` + append-only DecisionRecord | Item 5 | L |
 | B | Attachments and `evidence_status=present` | A | L |
-| C | Harden Jira automation (`accountId`, webhook keyed by issue) | A | M |
+| C | Harden Jira automation (`accountId`) | A; issue-key map **done** | M |
 | D | PDF Evidence Pack with SHA-256 hash | A + Legal template | L |
 | E | SSO and environments | A | XL |
 | F | Redis as UI session cache only | A (never source of truth) | S |

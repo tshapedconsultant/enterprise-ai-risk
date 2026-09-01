@@ -1,6 +1,6 @@
 # V2 improvements — closing the remaining gaps
 
-**Date:** 2026-08-18  
+**Date:** 2026-09-01  
 **Honest label today:** Production-oriented reference implementation (Demo / PoC). **Not** a production-ready enterprise platform.  
 Markdown is canonical. Optional Word export:
 `python scripts/export_docx.py docs/V2_IMPROVEMENTS.md --out-dir artifacts/docs`.
@@ -13,14 +13,15 @@ v1 already has the hard parts most “AI compliance” demos skip: deterministic
 
 `app/store.py` is a SQLite repository keyed by `assessment_id`, TTL-capped, and
 token-gated. It persists intake, assessments, workflow state, Jira mappings,
-and replay IDs across restart when `DATA_STORE` is on durable storage.
+replay IDs, and hash-chained audit events across restart when `DATA_STORE` is
+on durable storage.
 
 | Failure | Consequence |
 |---------|-------------|
 | Ephemeral/unmounted disk | SQLite file vanishes with the instance |
 | Multiple replicas | Local SQLite files diverge |
 | No `tenant_id` | One process = one implicit tenant |
-| In-place `DecisionRecord` update | Not an append-only audit log |
+| In-place `DecisionRecord` update | Current row is mutable; the hash chain is tamper-evident, not WORM |
 
 **Production target:** PostgreSQL is source of truth. Redis, if any, is UI
 cache only. Pydantic models stay the contract (ADR-7).
@@ -32,9 +33,11 @@ cache only. Pydantic models stay the contract (ADR-7).
 | `decision_records` | INSERT only. Correction = new row with `supersedes_id`. |
 | `jira_issues` | `issue.key` → `assessment_id`. Webhooks must not bind to “latest in RAM”. |
 
-**Already accepted:** restart-safe SQLite and persisted Jira issue mapping.
+**Already accepted:** restart-safe SQLite, persisted Jira issue mapping, and a
+same-database hash-chained audit ledger.
 **Remaining:** two workers consistent; tenant A cannot read tenant B by UUID;
-UPDATE on decision records fails or emits a tamper event.
+UPDATE on decision records fails or emits a tamper event that cannot be
+rewritten together with the checkpoint.
 
 ## 2. DPIA Workspace / Generator
 
@@ -97,7 +100,7 @@ Do not start with DPIA UI or RAG. Without persistence both are theatre.
 | D | DPIA Workspace stages 1–10 | 2 | L |
 | E | CTRL-DPIA binds to approved version | 2 | S |
 | F | Security questionnaire as artifact | 3 | M |
-| G | Jira `issue.key` → `assessment_id` | 1 | M |
+| G | Jira `issue.key` → `assessment_id` | 1 | **Done** (this release) |
 | H | SSO / RACI | 1 | XL |
 | I | PDF/DOCX pack with SHA-256 | 3 | L |
 
