@@ -61,7 +61,7 @@ flowchart LR
 
 | Control | Behaviour |
 |---------|-----------|
-| HMAC-SHA256 of raw body (`X-Hub-Signature-256`) | Missing or mismatch → **401**. Shared `X-Jira-Secret` is not accepted. |
+| HMAC-SHA256 of raw body (`X-Hub-Signature-256`) | Missing or mismatch → **401**. The active and optional previous secret are compared without revealing which matched. Shared `X-Jira-Secret` is not accepted. |
 | `X-Jira-Timestamp` | Outside ±5 minutes → **401** (replay window). |
 | `X-Jira-Event-Id` / nonce | Duplicate of a **successfully processed** event → **200** `{duplicate: true}`. 400 / 404 / 422 do **not** consume the id. Event IDs persist in `DATA_STORE`. |
 | Assessment binding | UUID from body/header/description, or persisted Jira `issue.key` mapping. Malformed IDs → **400** before lookup. No global “latest assessment”. |
@@ -71,7 +71,10 @@ flowchart LR
 
 Public `/api/v1/health` returns `{status: ok}` only. Diagnostic flags (`approver_domain`, `webhook_event_store`, LLM/Jira flags) live at `/api/v1/health/details`.
 
-**Still open:** SSO/RBAC, tenant isolation/RLS, and an append-only audit ledger. `API_ACCESS_TOKEN` is a deployment-wide gate, not user authentication. `REQUIRE_ASSESSMENT_AUTH=true` additionally binds chat/latest to each assessment token.
+**Still open:** SSO/RBAC and tenant isolation/RLS. `API_ACCESS_TOKEN` is one
+shared deployment-wide secret—not user identity/authentication, OIDC, AD/SSO,
+roles, tenant ownership, or authorization. `REQUIRE_ASSESSMENT_AUTH=true`
+additionally binds retrieval and chat to each assessment token.
 
 Per-assessment tokens are returned once to the browser and persisted only as a
 SHA-256 digest in SQLite. `API_ACCESS_TOKEN` remains a process secret supplied
@@ -81,12 +84,20 @@ Sequence: secret fails closed first; domain check runs inside `apply_approval()`
 
 `tests/test_jira_webhooks.py` covers wrong secret, Gmail, and the three valid gates.
 
-**Production requirement:** set `JIRA_WEBHOOK_SECRET` to a long random value. Missing or empty secret (or a malformed `JIRA_APPROVER_DOMAIN`) fails **process startup** via `ConfigurationError`. If the secret is cleared after start, webhook POSTs still return **503**. HMAC of the raw body is required.
+**Production requirement:** set `JIRA_WEBHOOK_SECRET` to a long random value.
+For no-downtime rotation, deploy the new value as active and the old value as
+`JIRA_WEBHOOK_SECRET_PREVIOUS`; remove the previous value after all callers
+use the new secret. The active secret remains mandatory at startup. Responses
+never disclose which configured secret matched. HMAC of the raw body is
+required.
 
 **Still open (not in this PoC):**
 
 - No allowlist of Jira / Atlassian egress IPs.
-- SQLite is a single-deployment durable store; production still needs PostgreSQL tenant isolation and immutable audit events.
+- SQLite is a single-deployment durable store. Its event hash chain detects
+  altered links/payloads and checks a same-database head/count, but it is not
+  PostgreSQL RLS or external immutable/WORM storage; a database administrator
+  can rewrite both events and checkpoint.
 - Knowing a valid mailbox on `JIRA_APPROVER_DOMAIN` is enough to pass the domain check once the HMAC secret is stolen. The allow-list still has to match.
 
 ## Rate limiting and proxies
@@ -103,7 +114,9 @@ Strings sent to OpenAI are passed through `redact_secrets` / `redact_mapping`: k
 
 - Do not bake secrets into the Docker image; pass them at runtime ([DEPLOYMENT.md](DEPLOYMENT.md)).
 - Outbound Jira uses basic auth (email + API token). Token leakage creates tickets in `AIGOV`; it does not by itself approve vendors.
-- No authentication on `/assess-vendor` or `/chat` — treat the URL as internal until SSO exists.
+- Set `API_ACCESS_TOKEN` on every networked deployment. It gates
+  `/assess-vendor` and `/chat`, but still does not establish a user identity or
+  authorize resources by user/tenant.
 
 ## Reporting
 

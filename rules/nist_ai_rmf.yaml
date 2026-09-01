@@ -1,0 +1,9 @@
+id: nist_ai_rmf
+name: NIST AI RMF alignment metadata
+mode: alignment
+engine_version: metadata-v1
+mappings:
+  - govern
+  - map
+  - measure
+  - manage

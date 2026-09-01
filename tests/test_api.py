@@ -82,6 +82,23 @@ def test_latest_after_assess(client, sample_intake):
     assert token not in str(data)
 
 
+def test_assessment_audit_endpoint_verifies_chain(client, sample_intake, monkeypatch):
+    monkeypatch.setenv("REQUIRE_ASSESSMENT_AUTH", "true")
+    assess = client.post("/api/v1/assess-vendor", json=sample_intake)
+    assessment_id = assess.json()["assessment_metadata"]["assessment_id"]
+    token = assess.headers["X-Assessment-Token"]
+    denied = client.get(f"/api/v1/assessments/{assessment_id}/audit")
+    assert denied.status_code == 401
+    audit = client.get(
+        f"/api/v1/assessments/{assessment_id}/audit",
+        headers={"X-Assessment-Token": token},
+    )
+    assert audit.status_code == 200
+    assert audit.json()["verification"]["valid"] is True
+    assert audit.json()["events"][0]["event_type"] == "assessment.created"
+    assert "access_token" not in str(audit.json())
+
+
 def test_chat_after_simulated_reload_requires_persisted_token(client, sample_intake, monkeypatch):
     assess = client.post("/api/v1/assess-vendor", json=sample_intake)
     assert assess.status_code == 200

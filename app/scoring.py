@@ -218,15 +218,18 @@ def derive_triage_decision(
     need_dpia: bool,
     score: int,
 ) -> Tuple[str, str]:
-    if personal and not has_dpa:
-        return EngineDecision.ESCALATE.value, "RULE-DECISION-ESCALATE-PERSONAL-NO-DPA"
-    if special_category and (not has_dpa or not dpia_ok):
-        return EngineDecision.ESCALATE.value, "RULE-DECISION-ESCALATE-ART9"
-    if score >= 5:
-        return EngineDecision.ESCALATE.value, "RULE-DECISION-ESCALATE-SCORE"
-    if score >= 4 or (need_dpia and not dpia_ok) or not has_dpa:
-        return EngineDecision.REQUIRES_REMEDIATION.value, "RULE-DECISION-REMEDIATE"
-    return EngineDecision.PENDING_REVIEW.value, "RULE-DECISION-PENDING-REVIEW"
+    from app.frameworks import evaluate_gdpr_decision
+
+    return evaluate_gdpr_decision(
+        {
+            "personal": personal,
+            "has_dpa": has_dpa,
+            "special_category": special_category,
+            "dpia_ok": dpia_ok,
+            "need_dpia": need_dpia,
+            "score": score,
+        }
+    )
 
 
 @dataclass

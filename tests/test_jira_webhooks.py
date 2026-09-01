@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 
+from app import store
 from app.jira_workflow import apply_approval
 from app.models import VendorInput
 from app.scoring import evaluate
@@ -99,6 +100,14 @@ def test_three_gates_close_workflow(client, sample_intake):
     assert body["workflow_status"] == "DEPARTMENT_GATES_COMPLETED"
     assert body["human_decision"] is None
     assert body["legal_approver"] == LEGAL_APPROVER
+    events = store.list_audit_events(assessment_id)
+    assert [event["event_type"] for event in events] == [
+        "assessment.created",
+        "workflow.updated",
+        "workflow.updated",
+        "workflow.updated",
+    ]
+    assert store.verify_audit_chain(assessment_id)["valid"] is True
 
     replay = post_jira_webhook(
         client,

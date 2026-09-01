@@ -1,0 +1,8 @@
+id: eu_ai_act
+name: EU AI Act alignment metadata
+mode: alignment
+engine_version: metadata-v1
+mappings:
+  - risk_classification
+  - human_oversight
+  - technical_documentation

@@ -1,0 +1,8 @@
+id: iso_42001
+name: ISO/IEC 42001 alignment metadata
+mode: alignment
+engine_version: metadata-v1
+mappings:
+  - ai_policy
+  - impact_assessment
+  - controls_and_monitoring

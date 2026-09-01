@@ -163,7 +163,7 @@ class AssessmentMetadata(BaseModel):
     overall_residual_risk: str  # Very Low | Low | Moderate | High | Critical
     applicable_frameworks: List[str] = Field(
         default_factory=list,
-        description="Enabled compliance frameworks (COMPLIANCE_FRAMEWORKS). GDPR is enforced; others are alignment.",
+        description="Enabled profiles. GDPR drives deterministic triage; others are alignment metadata only.",
     )
 
     @field_validator("assessment_id")

@@ -43,11 +43,14 @@ Pass secrets as environment variables. Never `COPY .env`.
 |----------|-----------------|--------|
 | `JIRA_APPROVER_DOMAIN` | **Yes (startup)** | Valid email domain (contains `.`, no `@`). Process exits if missing or malformed. |
 | `JIRA_WEBHOOK_SECRET` | **Yes (startup)** | Process exits if empty. Webhook POSTs also return **503** if it is cleared later. |
-| `DATA_STORE` | Recommended | SQLite file for assessments, access tokens, Jira issue maps, and webhook IDs. Default `data/app.sqlite`; mount it durably. |
-| `API_ACCESS_TOKEN` | For networked demos | Bearer or `X-API-Token` gate for assess/chat. It is not SSO or RBAC. |
+| `JIRA_WEBHOOK_SECRET_PREVIOUS` | Rotation only | Optional old secret accepted during a short no-downtime rotation window; remove after callers move to active. |
+| `DATA_STORE` | Recommended | SQLite file for assessments, hash-chained audit events, access-token digests, Jira maps, and webhook IDs. Default `data/app.sqlite`; mount it durably. |
+| `API_ACCESS_TOKEN` | For networked demos | Shared bearer or `X-API-Token` gate for assess/chat. It is not identity, OIDC/AD/SSO, roles, tenant ownership, or authorization. |
 | `OPENAI_API_KEY` | No | Chat LLM only |
 | `JIRA_BASE_URL` / `JIRA_API_TOKEN` | No | Dry-run tickets if unset |
 | `REQUIRE_ASSESSMENT_AUTH` | Defaults **on** | Set `false` only for local demos. Console already sends `X-Assessment-Token`. |
+| `COMPLIANCE_FRAMEWORKS` | No | Enabled profile IDs; GDPR remains mandatory and decision-capable, others alignment-only. |
+| `FRAMEWORK_RULES_DIR` | No | Override `rules/`; startup fails if an enabled profile is missing or invalid. |
 | `TRUSTED_PROXIES` | If behind a load balancer | Comma-separated IPs/CIDRs of **the proxies**. `X-Forwarded-For` is ignored unless the TCP peer is in this list. |
 
 ## Scale and state
@@ -56,11 +59,23 @@ Pass secrets as environment variables. Never `COPY .env`.
 |------------|-------------|
 | `DATA_STORE` is a local SQLite file | Restart-safe on a durable volume; do not share a local volume across autoscaled replicas |
 | Assessment and Jira mappings share one database | Webhooks resolve explicit UUIDs or persisted `issue.key`; no process-global latest row |
-| No `tenant_id`, RLS, or append-only decisions | A process token is not production multi-tenancy or authorization |
+| No `tenant_id` or RLS; audit chain/checkpoint share one DB | A process token is not production multi-tenancy; the ledger is not external immutable/WORM storage |
 | No built-in TLS | Terminate TLS at the load balancer / Cloud Run / ingress |
 
 **Rule:** keep `replicas: 1` until PostgreSQL tenant isolation exists. SQLite
-solves restart loss, not horizontal scaling or an immutable audit ledger.
+solves restart loss and provides tamper evidence for ordinary event
+modification, not horizontal scaling or externally anchored immutability.
+
+### Jira webhook secret rotation
+
+1. Generate a new secret.
+2. Deploy it as `JIRA_WEBHOOK_SECRET` and keep the old active value temporarily
+   in `JIRA_WEBHOOK_SECRET_PREVIOUS`.
+3. Update Jira automation/callers to sign with the new value.
+4. Remove `JIRA_WEBHOOK_SECRET_PREVIOUS` after the bounded rollout window.
+
+The verifier performs both comparisons and returns only a generic 401 on
+failure; the active secret is always required.
 
 ## Google Cloud Run
 

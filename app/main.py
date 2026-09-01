@@ -51,7 +51,7 @@ from app.security import (
     verify_timestamp,
     verify_webhook_hmac,
     validate_assessment_id,
-    webhook_secret,
+    webhook_secrets,
 )
 
 configure_logging()
@@ -177,6 +177,25 @@ async def get_assessment(
     return _assessment_payload(validated, x_assessment_token)
 
 
+@app.get("/api/v1/assessments/{assessment_id}/audit")
+async def get_assessment_audit(
+    assessment_id: str,
+    x_assessment_token: Optional[str] = Header(default=None, alias="X-Assessment-Token"),
+) -> dict:
+    """Return hash-chained audit events plus an integrity verification result."""
+    validated = validate_assessment_id(assessment_id)
+    assert validated is not None
+    if not store.token_matches(validated, x_assessment_token):
+        raise HTTPException(status_code=401, detail="Assessment token required")
+    if store.get_assessment(validated) is None:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return {
+        "assessment_id": validated,
+        "verification": store.verify_audit_chain(validated),
+        "events": store.list_audit_events(validated),
+    }
+
+
 @app.get("/api/v1/assessment/latest", deprecated=True)
 async def latest_assessment(
     x_assessment_token: Optional[str] = Header(default=None, alias="X-Assessment-Token"),
@@ -272,7 +291,7 @@ async def jira_webhook(
     x_assessment_id: Optional[str] = Header(default=None, alias="X-Assessment-Id"),
 ) -> dict:
     """Inbound from Jira when a human moves a department Task to Done."""
-    expected = webhook_secret()
+    expected, previous = webhook_secrets()
     if not expected:
         logger.error("jira webhook secret missing", extra={"event": "api.webhook.misconfigured"})
         raise HTTPException(
@@ -286,7 +305,7 @@ async def jira_webhook(
     if not signature:
         logger.warning("jira webhook hmac missing", extra={"event": "api.webhook.hmac_missing"})
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
-    verify_webhook_hmac(raw, signature, expected)
+    verify_webhook_hmac(raw, signature, expected, previous)
 
     verify_timestamp(x_jira_timestamp)
 
@@ -341,6 +360,7 @@ async def jira_webhook(
         updated = store.update_assessment(
             assessment_id,
             lambda current: apply_approval(current, body),
+            event_type="workflow.updated",
         )
     except ValueError as exc:
         store.forget_event(event_id)

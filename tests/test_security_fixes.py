@@ -3,10 +3,26 @@
 import os
 
 import pytest
+from fastapi import HTTPException
 
 from app.models import VendorInput
 from app.scoring import looks_like_personal_data, infer_privacy_signals, evaluate
+from app.security import hmac_hex, verify_webhook_hmac
 from tests.conftest import fetch_assessment, signed_webhook
+
+
+def test_webhook_hmac_accepts_active_and_previous_during_rotation():
+    body = b'{"webhookEvent":"jira:issue_updated"}'
+    active = hmac_hex(body, "active-secret")
+    previous = hmac_hex(body, "previous-secret")
+    verify_webhook_hmac(body, active, "active-secret", "previous-secret")
+    verify_webhook_hmac(body, previous, "active-secret", "previous-secret")
+    with pytest.raises(HTTPException) as wrong:
+        verify_webhook_hmac(body, hmac_hex(body, "wrong"), "active-secret", "previous-secret")
+    assert wrong.value.status_code == 401
+    with pytest.raises(HTTPException) as removed:
+        verify_webhook_hmac(body, previous, "active-secret")
+    assert removed.value.status_code == 401
 
 
 def test_email_delivery_is_not_personal_data():

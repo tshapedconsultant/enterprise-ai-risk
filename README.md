@@ -30,7 +30,7 @@ Chat stays on the mock assistant unless you add `OPENAI_API_KEY` in Render → E
 ### Windows (PowerShell)
 
 ```powershell
-cd C:\Users\anlaf\enterprise-ai-risk
+cd enterprise-ai-risk
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -68,7 +68,9 @@ docker run --rm -p 8000:8000 --env-file .env -v enterprise-ai-risk-data:/data \
   -e DATA_STORE=/data/app.sqlite enterprise-ai-risk
 ```
 
-The console is still a **Demo / PoC**: SQLite is restart-safe and assessment IDs are isolated, but there is no SSO/RBAC, tenant ownership, PostgreSQL row-level security, or append-only audit ledger.
+The console is still a **Demo / PoC**: SQLite is restart-safe and includes a
+hash-chained, tamper-evident audit ledger, but there is no SSO/RBAC, tenant
+ownership, PostgreSQL row-level security, or external immutable/WORM anchor.
 
 ## Architecture (summary)
 
@@ -94,6 +96,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHIT
 | `GET` | `/api/v1/health` | Liveness, LLM mode, Jira outbound status |
 | `GET` | `/api/v1/config` | Non-secret UI flags and enabled frameworks |
 | `GET` | `/api/v1/assessments/{assessment_id}` | Restore one assessment using its token |
+| `GET` | `/api/v1/assessments/{assessment_id}/audit` | Verify/export the assessment's hash chain |
 | `POST` | `/api/v1/assess-vendor` | Run triage; return full governance JSON |
 | `POST` | `/api/v1/chat` | Q&A scoped to the request's `assessment_id` |
 | `POST` | `/api/v1/webhooks/jira` | Inbound human approval from Jira |
@@ -135,11 +138,13 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 | `JIRA_USER_EMAIL` | Bot user for Jira REST auth |
 | `JIRA_API_TOKEN` | Jira API token |
 | `JIRA_WEBHOOK_SECRET` | Required at startup; HMAC-SHA256 of the raw body (`X-Hub-Signature-256`) |
+| `JIRA_WEBHOOK_SECRET_PREVIOUS` | Optional previous HMAC secret during a short rotation window |
 | `JIRA_APPROVER_DOMAIN` | Required at startup; corporate mailbox suffix for human approvers |
-| `DATA_STORE` | SQLite path for assessments, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
-| `API_ACCESS_TOKEN` | Optional bearer / `X-API-Token` gate for assess and chat; required for networked demos |
+| `DATA_STORE` | SQLite path for assessments, audit events, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
+| `API_ACCESS_TOKEN` | Shared deployment-wide bearer / `X-API-Token` gate; not identity, OIDC/AD/SSO, roles, tenant ownership, or authorization |
 | `REQUIRE_ASSESSMENT_AUTH` | Per-assessment token protection (default `true`) |
-| `COMPLIANCE_FRAMEWORKS` | Enabled metadata/pack sections: GDPR plus EU AI Act, ISO 42001, NIST AI RMF alignment |
+| `COMPLIANCE_FRAMEWORKS` | GDPR decision profile plus alignment-only EU AI Act, ISO 42001, and NIST AI RMF metadata |
+| `FRAMEWORK_RULES_DIR` | Optional override for validated YAML profiles (default `rules/`) |
 | `TRUSTED_PROXIES` | Comma-separated proxy IPs/CIDRs; required before `X-Forwarded-For` is trusted |
 | `LOG_LEVEL` | Log verbosity (`INFO` default) |
 | `LOG_FORMAT` | `text` or `json` (default `text`) |
@@ -151,6 +156,7 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 |------|------|
 | `app/main.py` | FastAPI routes |
 | `app/scoring.py` | Deterministic governance engine |
+| `rules/*.yaml` | Validated GDPR decision and alignment-only framework profiles |
 | `app/jira_workflow.py` | Epic + department Task payloads + webhook logic |
 | `app/models.py` | Pydantic schemas (intake, assessment, Jira) |
 | `app/llm.py` | Chat only; never scores |

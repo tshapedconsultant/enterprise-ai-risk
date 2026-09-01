@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.frameworks import parse_frameworks, stamp_assessment
+from app.frameworks import load_rule_profiles, parse_frameworks, stamp_assessment
 from app.models import VendorInput
 from app.scoring import evaluate
 
@@ -51,3 +51,31 @@ def test_stamp_assessment_filters_optional_alignment_sections():
     assert pack.nist_ai_rmf_mapping
     assert pack.iso_42001_mapping == []
     assert pack.eu_ai_act_applicability.startswith("Out of scope")
+
+
+def test_rule_profiles_keep_only_gdpr_decision_capable():
+    profiles = load_rule_profiles()
+    assert profiles["gdpr"].mode == "decision"
+    assert profiles["gdpr"].decision_rules
+    for framework_id in ("eu_ai_act", "iso_42001", "nist_ai_rmf"):
+        assert profiles[framework_id].mode == "alignment"
+        assert profiles[framework_id].decision_rules == []
+
+
+def test_invalid_alignment_decision_profile_fails_closed(tmp_path):
+    (tmp_path / "eu_ai_act.yaml").write_text(
+        """
+id: eu_ai_act
+name: invalid
+mode: alignment
+engine_version: metadata-v1
+decision_rules:
+  - id: INVALID
+    priority: 1
+    decision: PENDING REVIEW
+    default: true
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="alignment-only profiles cannot"):
+        load_rule_profiles(["eu_ai_act"], tmp_path)

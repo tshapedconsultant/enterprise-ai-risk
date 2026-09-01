@@ -1,20 +1,26 @@
 """
 Compliance framework catalog.
 
-v1 scoring rules in app/scoring.py are GDPR-anchored (DPA, DPIA, Art. 9, Art. 22).
-NIST AI RMF, ISO/IEC 42001, and the EU AI Act are alignment tags on the same
-controls — they are not separate engines. COMPLIANCE_FRAMEWORKS selects which
-frameworks appear in metadata, health, and the evidence pack.
+The validated rules/gdpr.yaml profile drives GDPR-anchored triage (DPA, DPIA,
+Art. 9, and score thresholds). NIST AI RMF, ISO/IEC 42001, and the EU AI Act
+profiles are alignment metadata on the same controls—they cannot contain
+decision rules. COMPLIANCE_FRAMEWORKS selects which profiles appear in
+metadata, health, and the evidence pack.
 
-This is honest: toggling a framework does not invent a new rule set.
+Enabling alignment metadata does not invent a framework-specific engine.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Sequence
 
+import yaml
+from pydantic import BaseModel, Field, model_validator
+
 from app.config import get_settings
+from app.enums import EngineDecision
 from app.models import AssessmentResponse, GovernanceEvidencePack
 
 
@@ -54,6 +60,66 @@ CATALOG: Dict[str, FrameworkSpec] = {
 }
 
 DEFAULT_FRAMEWORKS = ("gdpr", "eu_ai_act", "iso_42001", "nist_ai_rmf")
+DECISIONS = {decision.value for decision in EngineDecision}
+DECISION_FACTS = {
+    "personal",
+    "has_dpa",
+    "special_category",
+    "dpia_ok",
+    "need_dpia",
+    "score",
+}
+
+
+class DecisionRule(BaseModel):
+    id: str = Field(min_length=1)
+    priority: int = Field(ge=0)
+    decision: str
+    when: Dict[str, bool | int | str] = Field(default_factory=dict)
+    any_false: List[str] = Field(default_factory=list)
+    gte: Dict[str, float] = Field(default_factory=dict)
+    default: bool = False
+
+    @model_validator(mode="after")
+    def validate_rule(self):
+        unknown = (set(self.when) | set(self.any_false) | set(self.gte)) - DECISION_FACTS
+        if unknown:
+            raise ValueError(f"unknown decision facts: {sorted(unknown)}")
+        if self.decision not in DECISIONS:
+            raise ValueError(f"unsupported engine decision: {self.decision}")
+        has_conditions = bool(self.when or self.any_false or self.gte)
+        if self.default == has_conditions:
+            raise ValueError("a rule must be default or conditional, never both/neither")
+        return self
+
+
+class RuleProfile(BaseModel):
+    id: str
+    name: str
+    mode: str
+    engine_version: str
+    decision_rules: List[DecisionRule] = Field(default_factory=list)
+    mappings: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_profile(self):
+        if self.mode not in {"decision", "alignment"}:
+            raise ValueError("profile mode must be decision or alignment")
+        if self.mode == "alignment" and self.decision_rules:
+            raise ValueError("alignment-only profiles cannot contain decision rules")
+        if self.mode == "decision":
+            defaults = [rule for rule in self.decision_rules if rule.default]
+            if len(defaults) != 1:
+                raise ValueError("decision profile must contain exactly one default rule")
+            priorities = [rule.priority for rule in self.decision_rules]
+            if len(priorities) != len(set(priorities)):
+                raise ValueError("decision rule priorities must be unique")
+            conditional_priorities = [
+                rule.priority for rule in self.decision_rules if not rule.default
+            ]
+            if conditional_priorities and defaults[0].priority <= max(conditional_priorities):
+                raise ValueError("the default decision rule must have the last priority")
+        return self
 
 
 def parse_frameworks(raw: str) -> List[str]:
@@ -89,6 +155,69 @@ def parse_frameworks(raw: str) -> List[str]:
 
 def enabled_frameworks() -> List[str]:
     return parse_frameworks(get_settings().compliance_frameworks)
+
+
+def profiles_directory() -> Path:
+    configured = get_settings().framework_rules_dir
+    return (
+        Path(configured)
+        if configured
+        else Path(__file__).resolve().parent.parent / "rules"
+    )
+
+
+def load_rule_profiles(
+    enabled: Sequence[str] | None = None,
+    directory: Path | None = None,
+) -> Dict[str, RuleProfile]:
+    """Load and validate enabled YAML profiles. Missing/invalid config fails closed."""
+    profile_ids = list(enabled if enabled is not None else enabled_frameworks())
+    root = directory or profiles_directory()
+    profiles: Dict[str, RuleProfile] = {}
+    for framework_id in profile_ids:
+        path = root / f"{framework_id}.yaml"
+        if not path.is_file():
+            raise ValueError(f"Missing framework rule profile: {path}")
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            profile = RuleProfile.model_validate(raw)
+        except Exception as exc:
+            raise ValueError(f"Invalid framework rule profile {path}: {exc}") from exc
+        if profile.id != framework_id:
+            raise ValueError(
+                f"Framework profile id {profile.id!r} does not match {framework_id!r}"
+            )
+        if framework_id == "gdpr" and profile.mode != "decision":
+            raise ValueError("GDPR must be the deterministic decision profile")
+        if framework_id == "gdpr" and profile.engine_version != "deterministic-rules-v1":
+            raise ValueError("GDPR profile engine_version must be deterministic-rules-v1")
+        if framework_id != "gdpr" and profile.mode != "alignment":
+            raise ValueError(
+                f"{framework_id} is alignment-only and cannot affect decisions"
+            )
+        profiles[framework_id] = profile
+    return profiles
+
+
+def _rule_matches(rule: DecisionRule, facts: Dict[str, object]) -> bool:
+    if rule.default:
+        return True
+    if any(facts.get(key) != expected for key, expected in rule.when.items()):
+        return False
+    if rule.any_false and not any(not bool(facts.get(key)) for key in rule.any_false):
+        return False
+    if any(float(facts.get(key, 0)) < minimum for key, minimum in rule.gte.items()):
+        return False
+    return True
+
+
+def evaluate_gdpr_decision(facts: Dict[str, object]) -> tuple[str, str]:
+    """Evaluate the validated GDPR profile; alignment profiles are never consulted."""
+    profile = load_rule_profiles(["gdpr"])["gdpr"]
+    for rule in sorted(profile.decision_rules, key=lambda item: item.priority):
+        if _rule_matches(rule, facts):
+            return rule.decision, rule.id
+    raise RuntimeError("GDPR decision profile has no matching/default rule")
 
 
 def framework_status() -> dict:

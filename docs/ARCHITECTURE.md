@@ -166,21 +166,32 @@ Key types:
 
 ## Assessment store (`app/store.py`)
 
-SQLite persists intake, assessment/evidence pack, access token, Jira issue map,
-and webhook event IDs under `DATA_STORE`. Rows are keyed by `assessment_id`,
-TTL-capped, and recover after process restart. Retrieval never falls back to a
-global “latest” row.
+SQLite persists intake, assessment/evidence pack, access-token digest, Jira
+issue map, webhook event IDs, and hash-chained audit events under `DATA_STORE`.
+Rows are keyed by `assessment_id`, TTL-capped, and recover after process
+restart. Retrieval never falls back to a global “latest” row. Creation and
+decision/workflow updates append an event in the same SQLite transaction; each
+event hashes its canonical payload and the previous event hash. A separate
+same-database head/count checkpoint detects broken links and simple tail
+truncation.
 
 This closes restart loss for a single deployment, not production tenancy:
-SQLite has no tenant ownership/RLS and `DecisionRecord` is still updated in
-place. Production remains PostgreSQL + immutable append-only decision events.
+SQLite has no tenant ownership/RLS. The hash chain is tamper-evident, not
+tamper-proof: an attacker able to rewrite the whole database can rewrite its
+checkpoint too. It is not equivalent to PostgreSQL RLS or external
+immutable/WORM event storage.
 
 ## Framework catalog (`app/frameworks.py`)
 
 `COMPLIANCE_FRAMEWORKS` scopes optional EU AI Act, ISO/IEC 42001, and NIST AI
-RMF alignment sections. GDPR remains mandatory because the v1 rule engine
-implements DPA, DPIA, Art. 9, Art. 22, retention, and transfer controls.
-Alignment metadata is not represented as a separate certification engine.
+RMF alignment sections. YAML files in `rules/` are validated at startup.
+Only `gdpr.yaml` has `mode: decision` and drives the existing deterministic
+DPA/DPIA/Art. 9/score triage. The other profiles must be `mode: alignment`;
+validation rejects decision rules in them. Their mappings are metadata, not
+implemented certification or framework-specific decision engines.
+
+`API_ACCESS_TOKEN` is one shared deployment secret. It is an API gate, not
+user identity, OIDC, AD/SSO, roles, tenant ownership, or authorization.
 
 ## Web console (`static/`)
 

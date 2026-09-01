@@ -1,0 +1,44 @@
+id: gdpr
+name: GDPR deterministic decision profile
+mode: decision
+engine_version: deterministic-rules-v1
+decision_rules:
+  - id: RULE-DECISION-ESCALATE-PERSONAL-NO-DPA
+    priority: 10
+    decision: ESCALATE TO AI GOVERNANCE / LEGAL / SECURITY
+    when:
+      personal: true
+      has_dpa: false
+  - id: RULE-DECISION-ESCALATE-ART9
+    priority: 20
+    decision: ESCALATE TO AI GOVERNANCE / LEGAL / SECURITY
+    when:
+      special_category: true
+    any_false:
+      - has_dpa
+      - dpia_ok
+  - id: RULE-DECISION-ESCALATE-SCORE
+    priority: 30
+    decision: ESCALATE TO AI GOVERNANCE / LEGAL / SECURITY
+    gte:
+      score: 5
+  - id: RULE-DECISION-REMEDIATE
+    priority: 40
+    decision: REQUIRES REMEDIATION
+    gte:
+      score: 4
+  - id: RULE-DECISION-REMEDIATE
+    priority: 41
+    decision: REQUIRES REMEDIATION
+    when:
+      need_dpia: true
+      dpia_ok: false
+  - id: RULE-DECISION-REMEDIATE
+    priority: 42
+    decision: REQUIRES REMEDIATION
+    when:
+      has_dpa: false
+  - id: RULE-DECISION-PENDING-REVIEW
+    priority: 100
+    decision: PENDING REVIEW
+    default: true

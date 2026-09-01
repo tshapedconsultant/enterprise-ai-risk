@@ -90,6 +90,14 @@ def webhook_secret() -> str:
         return ""
 
 
+def webhook_secrets() -> tuple[str, str]:
+    try:
+        settings = get_settings()
+        return settings.jira_webhook_secret, settings.jira_webhook_secret_previous
+    except ConfigurationError:
+        return "", ""
+
+
 def validate_assessment_id(value: Optional[str]) -> Optional[str]:
     """Return a UUID string or None if empty. Reject malformed IDs before store lookup."""
     if value is None:
@@ -117,10 +125,22 @@ def parse_signature_header(value: Optional[str]) -> Optional[str]:
     return raw
 
 
-def verify_webhook_hmac(body: bytes, signature_header: Optional[str], secret: str) -> None:
-    expected = hmac_hex(body, secret)
+def verify_webhook_hmac(
+    body: bytes,
+    signature_header: Optional[str],
+    secret: str,
+    previous_secret: str = "",
+) -> None:
+    active_expected = hmac_hex(body, secret)
+    # Always perform two digest comparisons. When no previous secret is configured,
+    # use the active secret as a timing-safe dummy but do not accept that branch.
+    previous_expected = hmac_hex(body, previous_secret or secret)
     provided = parse_signature_header(signature_header)
-    if not provided or not hmac.compare_digest(provided, expected):
+    candidate = provided or ""
+    active_match = hmac.compare_digest(candidate, active_expected)
+    previous_match = hmac.compare_digest(candidate, previous_expected)
+    valid = active_match | (bool(previous_secret) & previous_match)
+    if not valid:
         logger.warning("jira webhook hmac mismatch", extra={"event": "api.webhook.hmac_fail"})
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 

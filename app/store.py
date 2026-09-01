@@ -9,12 +9,14 @@ Chat and GET /assessments/{id} never fall back to a global "latest" row.
 Callers must pass assessment_id. Webhooks resolve by explicit id or a persisted
 issue.key mapping. The deprecated /assessment/latest route also requires an ID.
 
-PostgreSQL + append-only DecisionRecord remains the multi-tenant production target.
+The SQLite hash chain provides tamper evidence, not tenant RLS or external
+immutable/WORM guarantees.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import threading
@@ -25,6 +27,7 @@ from typing import Callable, List, Optional
 from app.config import get_settings
 from app.logging_config import get_logger
 from app.models import AssessmentResponse, VendorInput
+from app.timeutil import utc_now_iso
 
 logger = get_logger("app.store")
 
@@ -71,6 +74,28 @@ def _init_locked() -> str:
         "CREATE TABLE IF NOT EXISTS webhook_events ("
         "event_id TEXT PRIMARY KEY NOT NULL, "
         "seen_at REAL NOT NULL)"
+    )
+    _conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_events ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "assessment_id TEXT NOT NULL, "
+        "event_type TEXT NOT NULL, "
+        "timestamp TEXT NOT NULL, "
+        "payload_json TEXT NOT NULL, "
+        "previous_hash TEXT NOT NULL, "
+        "event_hash TEXT NOT NULL UNIQUE, "
+        "FOREIGN KEY (assessment_id) REFERENCES assessments(assessment_id) ON DELETE CASCADE)"
+    )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_events_assessment "
+        "ON audit_events(assessment_id, id)"
+    )
+    _conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_heads ("
+        "assessment_id TEXT PRIMARY KEY NOT NULL, "
+        "event_count INTEGER NOT NULL, "
+        "head_hash TEXT NOT NULL, "
+        "FOREIGN KEY (assessment_id) REFERENCES assessments(assessment_id) ON DELETE CASCADE)"
     )
     _conn.commit()
     return _store_mode
@@ -140,6 +165,90 @@ def _token_digest(token: str) -> str:
     return "sha256:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _assessment_audit_payload(assessment: AssessmentResponse) -> dict:
+    serialized = assessment.model_dump_json()
+    return {
+        "assessment_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        "decision_record": (
+            assessment.decision_record.model_dump(mode="json")
+            if assessment.decision_record
+            else None
+        ),
+        "engine_decision": assessment.assessment_metadata.decision,
+        "engine_version": (
+            assessment.decision_record.model_version
+            if assessment.decision_record
+            else None
+        ),
+    }
+
+
+def _event_hash(
+    assessment_id: str,
+    event_type: str,
+    timestamp: str,
+    payload_json: str,
+    previous_hash: str,
+) -> str:
+    envelope = _canonical_json(
+        {
+            "assessment_id": assessment_id,
+            "event_type": event_type,
+            "timestamp": timestamp,
+            "payload": json.loads(payload_json),
+            "previous_hash": previous_hash,
+        }
+    )
+    return hashlib.sha256(envelope.encode("utf-8")).hexdigest()
+
+
+def _append_audit_event_locked(
+    assessment: AssessmentResponse,
+    event_type: str,
+) -> str:
+    """Append one hash-linked event inside the caller's SQLite transaction."""
+    assert _conn is not None
+    assessment_id = assessment.assessment_metadata.assessment_id
+    head = _conn.execute(
+        "SELECT event_count, head_hash FROM audit_heads WHERE assessment_id = ?",
+        (assessment_id,),
+    ).fetchone()
+    previous_hash = head[1] if head else ""
+    timestamp = utc_now_iso()
+    payload_json = _canonical_json(_assessment_audit_payload(assessment))
+    current_hash = _event_hash(
+        assessment_id,
+        event_type,
+        timestamp,
+        payload_json,
+        previous_hash,
+    )
+    _conn.execute(
+        "INSERT INTO audit_events"
+        "(assessment_id, event_type, timestamp, payload_json, previous_hash, event_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            assessment_id,
+            event_type,
+            timestamp,
+            payload_json,
+            previous_hash,
+            current_hash,
+        ),
+    )
+    _conn.execute(
+        "INSERT INTO audit_heads(assessment_id, event_count, head_hash) VALUES (?, 1, ?) "
+        "ON CONFLICT(assessment_id) DO UPDATE SET "
+        "event_count=audit_heads.event_count + 1, head_hash=excluded.head_hash",
+        (assessment_id, current_hash),
+    )
+    return current_hash
+
+
 def save(intake: VendorInput, assessment: AssessmentResponse, access_token: Optional[str] = None) -> str:
     """Persist intake + assessment. Returns the access token for this assessment."""
     assessment_id = assessment.assessment_metadata.assessment_id
@@ -148,24 +257,32 @@ def save(intake: VendorInput, assessment: AssessmentResponse, access_token: Opti
         _init_locked()
         assert _conn is not None
         _purge_locked()
-        _conn.execute(
-            "INSERT INTO assessments"
-            "(assessment_id, intake_json, assessment_json, access_token, updated_at) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(assessment_id) DO UPDATE SET "
-            "intake_json=excluded.intake_json, "
-            "assessment_json=excluded.assessment_json, "
-            "access_token=excluded.access_token, "
-            "updated_at=excluded.updated_at",
-            (
-                assessment_id,
-                intake.model_dump_json(),
-                assessment.model_dump_json(),
-                _token_digest(token),
-                _now(),
-            ),
-        )
-        _conn.commit()
+        with _conn:
+            existing = _conn.execute(
+                "SELECT 1 FROM assessments WHERE assessment_id = ?",
+                (assessment_id,),
+            ).fetchone()
+            _conn.execute(
+                "INSERT INTO assessments"
+                "(assessment_id, intake_json, assessment_json, access_token, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(assessment_id) DO UPDATE SET "
+                "intake_json=excluded.intake_json, "
+                "assessment_json=excluded.assessment_json, "
+                "access_token=excluded.access_token, "
+                "updated_at=excluded.updated_at",
+                (
+                    assessment_id,
+                    intake.model_dump_json(),
+                    assessment.model_dump_json(),
+                    _token_digest(token),
+                    _now(),
+                ),
+            )
+            _append_audit_event_locked(
+                assessment,
+                "assessment.updated" if existing else "assessment.created",
+            )
     meta = assessment.assessment_metadata
     record = assessment.decision_record
     logger.info(
@@ -195,11 +312,12 @@ def save_assessment(assessment: AssessmentResponse) -> None:
         ).fetchone()
         if row is None:
             raise KeyError(f"No session for assessment_id={assessment_id}")
-        _conn.execute(
-            "UPDATE assessments SET assessment_json = ?, updated_at = ? WHERE assessment_id = ?",
-            (assessment.model_dump_json(), _now(), assessment_id),
-        )
-        _conn.commit()
+        with _conn:
+            _conn.execute(
+                "UPDATE assessments SET assessment_json = ?, updated_at = ? WHERE assessment_id = ?",
+                (assessment.model_dump_json(), _now(), assessment_id),
+            )
+            _append_audit_event_locked(assessment, "assessment.updated")
     record = assessment.decision_record
     logger.info(
         "assessment updated",
@@ -216,6 +334,7 @@ def save_assessment(assessment: AssessmentResponse) -> None:
 def update_assessment(
     assessment_id: str,
     updater: Callable[[AssessmentResponse], AssessmentResponse],
+    event_type: str = "assessment.updated",
 ) -> AssessmentResponse:
     """Serialize read-modify-write updates so concurrent webhooks do not lose a gate."""
     with _lock:
@@ -231,12 +350,13 @@ def update_assessment(
         updated = updater(current)
         if updated.assessment_metadata.assessment_id != assessment_id:
             raise ValueError("Assessment updater cannot change assessment_id")
-        _conn.execute(
-            "UPDATE assessments SET assessment_json = ?, updated_at = ? "
-            "WHERE assessment_id = ?",
-            (updated.model_dump_json(), _now(), assessment_id),
-        )
-        _conn.commit()
+        with _conn:
+            _conn.execute(
+                "UPDATE assessments SET assessment_json = ?, updated_at = ? "
+                "WHERE assessment_id = ?",
+                (updated.model_dump_json(), _now(), assessment_id),
+            )
+            _append_audit_event_locked(updated, event_type)
     record = updated.decision_record
     logger.info(
         "assessment updated",
@@ -340,6 +460,94 @@ def resolve_jira_issue(issue_key: str) -> Optional[str]:
         return row[0] if row else None
 
 
+def list_audit_events(assessment_id: str) -> List[dict]:
+    """Return ordered event envelopes for audit export and tests (never tokens)."""
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        rows = _conn.execute(
+            "SELECT id, event_type, timestamp, payload_json, previous_hash, event_hash "
+            "FROM audit_events WHERE assessment_id = ? ORDER BY id",
+            (assessment_id,),
+        ).fetchall()
+    events = []
+    for row in rows:
+        try:
+            payload = json.loads(row[3])
+            payload_parse_error = False
+        except json.JSONDecodeError:
+            payload = None
+            payload_parse_error = True
+        events.append(
+            {
+                "id": row[0],
+                "assessment_id": assessment_id,
+                "event_type": row[1],
+                "timestamp": row[2],
+                "payload": payload,
+                "payload_parse_error": payload_parse_error,
+                "previous_hash": row[4],
+                "event_hash": row[5],
+            }
+        )
+    return events
+
+
+def verify_audit_chain(assessment_id: str) -> dict:
+    """Verify event hashes, links, and the same-database head/count checkpoint."""
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        rows = _conn.execute(
+            "SELECT id, event_type, timestamp, payload_json, previous_hash, event_hash "
+            "FROM audit_events WHERE assessment_id = ? ORDER BY id",
+            (assessment_id,),
+        ).fetchall()
+        head = _conn.execute(
+            "SELECT event_count, head_hash FROM audit_heads WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+    previous_hash = ""
+    for row in rows:
+        event_id, event_type, timestamp, payload_json, stored_previous, stored_hash = row
+        try:
+            expected_hash = _event_hash(
+                assessment_id,
+                event_type,
+                timestamp,
+                payload_json,
+                previous_hash,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                "valid": False,
+                "event_count": len(rows),
+                "head_hash": previous_hash,
+                "failed_event_id": event_id,
+            }
+        if stored_previous != previous_hash or not secrets.compare_digest(
+            stored_hash, expected_hash
+        ):
+            return {
+                "valid": False,
+                "event_count": len(rows),
+                "head_hash": previous_hash,
+                "failed_event_id": event_id,
+            }
+        previous_hash = stored_hash
+    checkpoint_valid = bool(
+        head
+        and head[0] == len(rows)
+        and secrets.compare_digest(head[1], previous_hash)
+    )
+    return {
+        "valid": checkpoint_valid,
+        "event_count": len(rows),
+        "head_hash": previous_hash,
+        "failed_event_id": None if checkpoint_valid else (rows[-1][0] if rows else None),
+    }
+
+
 def assessment_auth_required() -> bool:
     """Default on. Set REQUIRE_ASSESSMENT_AUTH=false only for local demos."""
     return get_settings().require_assessment_auth
@@ -394,6 +602,8 @@ def clear() -> None:
         _init_locked()
         assert _conn is not None
         _conn.execute("DELETE FROM jira_issues")
+        _conn.execute("DELETE FROM audit_events")
+        _conn.execute("DELETE FROM audit_heads")
         _conn.execute("DELETE FROM assessments")
         _conn.execute("DELETE FROM webhook_events")
         _conn.commit()

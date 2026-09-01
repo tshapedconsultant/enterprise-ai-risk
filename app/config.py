@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     jira_approver_domain: str
     jira_webhook_secret: str
+    jira_webhook_secret_previous: str = ""
     jira_project_key: str = "AIGOV"
     jira_gate_issue_type: str = "Task"
     jira_allowed_approvers: str = ""
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = Field(default=24 * 3600)
     max_sessions: int = 200
     compliance_frameworks: str = "gdpr,eu_ai_act,iso_42001,nist_ai_rmf"
+    framework_rules_dir: str = ""
 
     api_rate_limit_per_minute: int = 60
     trusted_proxies: str = ""
@@ -88,12 +90,14 @@ class Settings(BaseSettings):
         "jira_epic_link_field",
         "jira_allowed_approvers",
         "jira_assignee_account_ids",
+        "jira_webhook_secret_previous",
         "openai_api_key",
         "openai_model",
         "webhook_event_store",
         "data_store",
         "api_access_token",
         "compliance_frameworks",
+        "framework_rules_dir",
         "health_details_token",
         "trusted_proxies",
     )
@@ -213,11 +217,12 @@ def validate_startup() -> dict[str, Any]:
     half-configured process.
     """
     from app import store
-    from app.frameworks import parse_frameworks
+    from app.frameworks import load_rule_profiles, parse_frameworks
 
     settings = get_settings()
     try:
-        parse_frameworks(settings.compliance_frameworks)
+        enabled = parse_frameworks(settings.compliance_frameworks)
+        load_rule_profiles(enabled)
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
     event_mode = store.init_store()

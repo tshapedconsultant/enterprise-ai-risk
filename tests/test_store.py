@@ -1,6 +1,7 @@
 """SQLite assessment store: round-trip, TTL retention, restart, Jira key map."""
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -137,3 +138,45 @@ def test_atomic_assessment_updater_preserves_token(monkeypatch):
     assert store.get_assessment(aid).decision_record.workflow_status == WorkflowStatus.SUPERSEDED
     assert store.token_matches(aid, token) is True
     assert store.token_matches(aid, "wrong") is False
+    events = store.list_audit_events(aid)
+    assert [event["event_type"] for event in events] == [
+        "assessment.created",
+        "assessment.updated",
+    ]
+    assert events[0]["previous_hash"] == ""
+    assert events[1]["previous_hash"] == events[0]["event_hash"]
+    assert store.verify_audit_chain(aid) == {
+        "valid": True,
+        "event_count": 2,
+        "head_hash": events[1]["event_hash"],
+        "failed_event_id": None,
+    }
+
+
+def test_audit_chain_detects_payload_tampering(tmp_path, monkeypatch):
+    path = tmp_path / "tamper.sqlite"
+    monkeypatch.setenv("DATA_STORE", str(path))
+    store.close_store()
+    try:
+        payload = _intake("TamperCo")
+        assessment = evaluate(payload)
+        aid = assessment.assessment_metadata.assessment_id
+        store.save(payload, assessment)
+        assert store.verify_audit_chain(aid)["valid"] is True
+        store.close_store()
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "UPDATE audit_events SET payload_json = ? WHERE assessment_id = ?",
+                ('{"tampered":true}', aid),
+            )
+        store.init_store()
+        verification = store.verify_audit_chain(aid)
+        assert verification["valid"] is False
+        assert verification["failed_event_id"] is not None
+    finally:
+        store.close_store()
+        monkeypatch.setenv(
+            "DATA_STORE",
+            str(Path(__file__).resolve().parent / "logs" / "app.sqlite"),
+        )
+        store.init_store()
