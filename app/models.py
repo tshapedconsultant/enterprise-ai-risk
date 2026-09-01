@@ -161,6 +161,10 @@ class AssessmentMetadata(BaseModel):
     assessment_date: str  # ISO date YYYY-MM-DD (UTC)
     decision: str  # Engine triage only — never a final APPROVE
     overall_residual_risk: str  # Very Low | Low | Moderate | High | Critical
+    applicable_frameworks: List[str] = Field(
+        default_factory=list,
+        description="Enabled compliance frameworks (COMPLIANCE_FRAMEWORKS). GDPR is enforced; others are alignment.",
+    )
 
     @field_validator("assessment_id")
     @classmethod
@@ -304,7 +308,7 @@ class ChatRequest(BaseModel):
     history: List[ChatMessage] = Field(default_factory=list, max_length=20)
     assessment_id: Optional[str] = Field(
         default=None,
-        description="Target assessment UUID; required when multiple assessments exist in the store",
+        description="Target assessment UUID. Required to load a report; there is no global latest assessment.",
     )
 
     @field_validator("assessment_id")

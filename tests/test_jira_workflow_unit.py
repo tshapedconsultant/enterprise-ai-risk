@@ -24,13 +24,13 @@ def test_parse_webhook_minimal_payload():
     parsed = parse_webhook_event(
         {
             "status": "Done",
-            "approver_email": "j.perez@adevinta.com",
+            "approver_email": "j.perez@example.com",
             "labels": ["legal-review"],
             "assessment_id": "uuid-123",
         }
     )
     assert parsed.status == "Done"
-    assert parsed.email == "j.perez@adevinta.com"
+    assert parsed.email == "j.perez@example.com"
     assert parsed.labels == ["legal-review"]
     assert parsed.key == ""
     assert parsed.assessment_id == "uuid-123"
@@ -45,7 +45,7 @@ def test_parse_webhook_jira_issue_shape():
                 "fields": {
                     "status": {"name": "Done"},
                     "labels": ["infosec"],
-                    "assignee": {"emailAddress": "secops@adevinta.com"},
+                    "assignee": {"emailAddress": "secops@example.com"},
                     "description": "Line one\nAssessment-ID: abc-def\n",
                 },
             }
@@ -64,19 +64,19 @@ def test_parse_webhook_uses_actor_not_assignee():
     parsed = parse_webhook_event(
         {
             "webhookEvent": "jira:issue_updated",
-            "user": {"emailAddress": "dpo@adevinta.com"},
+            "user": {"emailAddress": "dpo@example.com"},
             "issue": {
                 "key": "AIGOV-42",
                 "fields": {
                     "status": {"name": "Done"},
                     "labels": ["legal-review"],
-                    "assignee": {"emailAddress": "secops@adevinta.com"},
+                    "assignee": {"emailAddress": "secops@example.com"},
                 },
             },
         }
     )
-    assert parsed.email == "dpo@adevinta.com"
-    assert parsed.actor_email == "dpo@adevinta.com"
+    assert parsed.email == "dpo@example.com"
+    assert parsed.actor_email == "dpo@example.com"
 
 
 def test_department_from_labels():
@@ -92,7 +92,7 @@ def test_department_from_labels_rejects_multiple_departments():
 
 
 def test_approver_domain_ok():
-    assert approver_domain_ok("dpo@adevinta.com")
+    assert approver_domain_ok("dpo@example.com")
     assert not approver_domain_ok("dpo@gmail.com")
     assert not approver_domain_ok("")
 
@@ -111,11 +111,11 @@ def test_approver_domain_rejects_malformed(monkeypatch):
     monkeypatch.setenv("JIRA_APPROVER_DOMAIN", "notadomain")
     with pytest.raises(ConfigurationError, match="valid email domain"):
         approver_domain()
-    monkeypatch.setenv("JIRA_APPROVER_DOMAIN", "@adevinta.com")
+    monkeypatch.setenv("JIRA_APPROVER_DOMAIN", "@example.com")
     with pytest.raises(ConfigurationError, match="valid email domain"):
         approver_domain()
-    monkeypatch.setenv("JIRA_APPROVER_DOMAIN", "Adevinta.com")
-    assert approver_domain() == "adevinta.com"
+    monkeypatch.setenv("JIRA_APPROVER_DOMAIN", "Example.com")
+    assert approver_domain() == "example.com"
 
 
 def test_resolve_account_id_requires_exact_match():
@@ -127,11 +127,11 @@ def test_resolve_account_id_requires_exact_match():
                 status_code = 200
 
                 def json(self):
-                    return [{"accountId": "wrong-person", "emailAddress": "other@adevinta.com"}]
+                    return [{"accountId": "wrong-person", "emailAddress": "other@example.com"}]
 
             return Resp()
 
-    assert _resolve_account_id("dpo@adevinta.com", FakeClient(), ("u", "p"), "https://ex.atlassian.net") is None
+    assert _resolve_account_id("dpo@example.com", FakeClient(), ("u", "p"), "https://ex.atlassian.net") is None
 
 
 def test_delete_jira_issue_sends_auth():
@@ -174,7 +174,7 @@ def test_missing_department_ticket_is_not_approval():
             {
                 "status": "Done",
                 "previous_status": "To Do",
-                "approver_email": "dpo@adevinta.com",
+                "approver_email": "dpo@example.com",
                 "labels": ["legal-review"],
             },
         )
@@ -227,9 +227,9 @@ def test_single_gate_does_not_approve():
     )
     updated = apply_approval(
         assessment,
-        {"status": "Done", "previous_status": "To Do", "approver_email": "dpo@adevinta.com", "labels": ["legal-review"]},
+        {"status": "Done", "previous_status": "To Do", "approver_email": "dpo@example.com", "labels": ["legal-review"]},
     )
-    assert updated.decision_record.legal_approver == "dpo@adevinta.com"
+    assert updated.decision_record.legal_approver == "dpo@example.com"
     assert updated.decision_record.workflow_status == "HUMAN_REVIEW_REQUIRED"
     assert updated.decision_record.human_decision is None
 
@@ -252,7 +252,7 @@ def _sample_tickets():
 def _jira_env(monkeypatch):
     monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
     monkeypatch.setenv("JIRA_API_TOKEN", "token")
-    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@adevinta.com")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
 
 
 class _JiraMock:
@@ -354,7 +354,7 @@ def test_publish_user_search_no_match_omits_assignee(monkeypatch):
     class NoUser(_JiraMock):
         def handler(self, request: httpx.Request) -> httpx.Response:
             if request.url.path.endswith("/user/search"):
-                return httpx.Response(200, json=[{"accountId": "other", "emailAddress": "other@adevinta.com"}])
+                return httpx.Response(200, json=[{"accountId": "other", "emailAddress": "other@example.com"}])
             return super().handler(request)
 
     result, tickets, mock = _run_publish(monkeypatch, NoUser())
@@ -395,7 +395,7 @@ def test_assignee_fallback_does_not_approve():
                         "labels": ["legal-review"],
                         "issuetype": {"name": "Task"},
                         "project": {"key": "AIGOV"},
-                        "assignee": {"emailAddress": "dpo@adevinta.com"},
+                        "assignee": {"emailAddress": "dpo@example.com"},
                     },
                 },
             },

@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-18  
 **Honest label today:** Production-oriented reference implementation (Demo / PoC). **Not** a production-ready enterprise platform.  
-**Companion Word file:** generate with `python docs/build_v2_improvements.py`.
+Markdown is canonical. Optional Word export:
+`python scripts/export_docx.py docs/V2_IMPROVEMENTS.md --out-dir artifacts/docs`.
 
 v1 already has the hard parts most “AI compliance” demos skip: deterministic engine, `EvidenceItem` ≠ finding, `PrivacyTriage`, `DecisionRecord`, Jira gates, `EVIDENCE NOT FOUND`. It still loses points in three places a DPO or sceptical reviewer will find in minutes. Closing them is the jump from ~8.5 (strong reference) to ~9.0+ (credible control plane).
 
@@ -10,16 +11,19 @@ v1 already has the hard parts most “AI compliance” demos skip: deterministic
 
 ## 1. Persistence
 
-`app/store.py` is keyed by `assessment_id`, locked, TTL-capped, and optionally token-gated. Enough for a demo. Still RAM.
+`app/store.py` is a SQLite repository keyed by `assessment_id`, TTL-capped, and
+token-gated. It persists intake, assessments, workflow state, Jira mappings,
+and replay IDs across restart when `DATA_STORE` is on durable storage.
 
 | Failure | Consequence |
 |---------|-------------|
-| Process restart | Assessments, packs, webhook event ids vanish |
-| Two workers | Same `assessment_id` is not one object |
+| Ephemeral/unmounted disk | SQLite file vanishes with the instance |
+| Multiple replicas | Local SQLite files diverge |
 | No `tenant_id` | One process = one implicit tenant |
 | In-place `DecisionRecord` update | Not an append-only audit log |
 
-**v2:** PostgreSQL is source of truth. Redis, if any, is UI cache only. Pydantic models stay the contract (ADR-7).
+**Production target:** PostgreSQL is source of truth. Redis, if any, is UI
+cache only. Pydantic models stay the contract (ADR-7).
 
 | Object | Rule |
 |--------|------|
@@ -28,7 +32,9 @@ v1 already has the hard parts most “AI compliance” demos skip: deterministic
 | `decision_records` | INSERT only. Correction = new row with `supersedes_id`. |
 | `jira_issues` | `issue.key` → `assessment_id`. Webhooks must not bind to “latest in RAM”. |
 
-**Accept:** restart-safe; two workers consistent; tenant A cannot read tenant B by UUID; UPDATE on decision records fails or tampers.
+**Already accepted:** restart-safe SQLite and persisted Jira issue mapping.
+**Remaining:** two workers consistent; tenant A cannot read tenant B by UUID;
+UPDATE on decision records fails or emits a tamper event.
 
 ## 2. DPIA Workspace / Generator
 

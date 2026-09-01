@@ -14,8 +14,9 @@
  *   - Status chips always pair colour with a text label (Pending, missing, approved).
  *   - assessmentCard() is visual; formatAssessment() is plain text for clipboard + LLM history.
  *
- * Session: conversation history is client-side. Page reload restores the last assessment
- * via GET /api/v1/assessment/latest using the token in sessionStorage.
+ * Session: conversation history is client-side. Page reload restores THIS browser's
+ * assessment via GET /api/v1/assessments/{id} using id + token in sessionStorage.
+ * There is no server-side "latest assessment" shared across users.
  */
 
 const messagesEl = document.getElementById("messages");
@@ -36,15 +37,20 @@ const tabsEl = report.querySelector(".tabs");
 
 /** @type {{ role: string, content: string }[]} */
 let history = [];
-/** @type {object | null} Latest assessment, used by Copy report */
-let latestAssessment = null;
-/** @type {string | null} Correlates chat and webhooks with the correct in-memory assessment */
+/** @type {object | null} Current browser-scoped assessment, used by Copy report */
+let currentAssessment = null;
+/** @type {string | null} Correlates chat and webhooks with this browser's assessment */
 let currentAssessmentId = null;
 /** @type {string | null} Access token for the current assessment; persisted in sessionStorage across F5 */
 let currentAssessmentToken = null;
+/** @type {string | null} Optional process-wide API token when API_ACCESS_TOKEN is set */
+let apiAccessToken = null;
+/** @type {{ approver_domain?: string, api_auth_required?: boolean, frameworks?: object }} */
+let consoleConfig = {};
 
 const SESSION_ID_KEY = "ear.assessment_id";
 const SESSION_TOKEN_KEY = "ear.assessment_token";
+const API_TOKEN_KEY = "ear.api_token";
 
 function persistSession() {
   try {
@@ -57,13 +63,34 @@ function persistSession() {
   }
 }
 
+function persistApiToken() {
+  try {
+    if (apiAccessToken) sessionStorage.setItem(API_TOKEN_KEY, apiAccessToken);
+    else sessionStorage.removeItem(API_TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function ensureApiToken() {
+  if (!consoleConfig.api_auth_required) return true;
+  if (apiAccessToken) return true;
+  const entered = window.prompt("This console requires an API token (API_ACCESS_TOKEN).");
+  if (!entered) return false;
+  apiAccessToken = entered.trim();
+  persistApiToken();
+  return Boolean(apiAccessToken);
+}
+
 function restoreSessionFromStorage() {
   try {
     currentAssessmentId = sessionStorage.getItem(SESSION_ID_KEY);
     currentAssessmentToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
+    apiAccessToken = sessionStorage.getItem(API_TOKEN_KEY);
   } catch {
     currentAssessmentId = null;
     currentAssessmentToken = null;
+    apiAccessToken = null;
   }
 }
 
@@ -119,6 +146,10 @@ initTabs();
 assessForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const payload = formPayload(new FormData(assessForm));
+  if (!ensureApiToken()) {
+    addMessage("assistant", "Assessment not sent: an API token is required.", true);
+    return;
+  }
   assessBtn.disabled = true;
   showChat();
   addMessage("assistant", `Assessing ${payload.vendor_name}…`);
@@ -146,8 +177,8 @@ resetBtn.addEventListener("click", () => {
 });
 
 copyBtn.addEventListener("click", async () => {
-  if (!latestAssessment) return;
-  const text = formatAssessment(latestAssessment);
+  if (!currentAssessment) return;
+  const text = formatAssessment(currentAssessment);
   const copied = await copyTextToClipboard(text);
   copyBtn.textContent = copied ? "Report copied" : "Could not copy";
   setTimeout(() => {
@@ -167,6 +198,10 @@ suggestionsEl.addEventListener("click", (event) => {
 
 async function sendChat(message) {
   if (!message || chatInput.disabled) return;
+  if (!ensureApiToken()) {
+    addMessage("assistant", "Chat not sent: an API token is required.", true);
+    return;
+  }
   chatInput.value = "";
   addMessage("user", message);
   chatBtn.disabled = true;
@@ -191,28 +226,34 @@ async function sendChat(message) {
 async function initHealth() {
   restoreSessionFromStorage();
   try {
-    const health = await getJson("/api/v1/health/details").catch(() => getJson("/api/v1/health"));
-    const live = health.status === "ok";
+    consoleConfig = await getJson("/api/v1/config");
+    const health = consoleConfig;
+    const enabled = (health.frameworks && health.frameworks.enabled) || [];
     llmStatus.textContent = health.llm_enabled
       ? "Full mode: answers are grounded in this session's report."
-      : live && health.llm_enabled === undefined
-        ? "Console is up. Open /api/v1/health/details for diagnostic flags."
-        : "Simulator mode: rule-based triage without a language model. Suitable for demos.";
+      : "Simulator mode: rule-based triage without a language model. Suitable for demos.";
     if (health.jira_outbound) {
       llmStatus.textContent += " Jira outbound is active.";
-    } else if (health.jira_outbound === false) {
+    } else {
       llmStatus.textContent += " Jira tickets are dry-run until credentials are configured.";
+    }
+    if (enabled.length) {
+      llmStatus.textContent += ` Frameworks: ${enabled.join(", ")}.`;
+    }
+    if (health.api_auth_required) {
+      llmStatus.textContent += " API token required.";
     }
   } catch {
     llmStatus.textContent = "Cannot connect to the console. Check that the service is running.";
     return;
   }
   try {
-    const latest = await getJson("/api/v1/assessment/latest");
-    if (latest.assessment) {
-      applyAssessment(latest.assessment);
+    if (!currentAssessmentId) return;
+    const restored = await getJson(`/api/v1/assessments/${encodeURIComponent(currentAssessmentId)}`);
+    if (restored.assessment) {
+      applyAssessment(restored.assessment);
       persistSession();
-      seedChatFromAssessment(latest.assessment);
+      seedChatFromAssessment(restored.assessment);
     } else {
       clearPersistedSession();
     }
@@ -249,7 +290,7 @@ function initTabs() {
 }
 
 function applyAssessment(assessment) {
-  latestAssessment = assessment;
+  currentAssessment = assessment;
   currentAssessmentId = assessment.assessment_metadata?.assessment_id || null;
   renderSummary(assessment);
   renderReport(assessment);
@@ -426,7 +467,7 @@ function formatAssessment(assessment) {
     ? `Engine ${record.model_version} · triage ${record.decision} · workflow ${record.workflow_status} · score ${record.risk_score}/5 · LLM does not decide`
     : "";
   const approvers = record
-    ? `Approvers @adevinta.com — Legal: ${record.legal_approver || "pending"} · SecOps: ${record.secops_approver || "pending"} · AI Gov: ${record.aigov_approver || "pending"}`
+    ? `Approvers @${consoleConfig.approver_domain || "configured-domain"} — Legal: ${record.legal_approver || "pending"} · SecOps: ${record.secops_approver || "pending"} · AI Gov: ${record.aigov_approver || "pending"}`
     : "";
   const dpia = privacy
     ? `DPIA required: ${privacy.privacy_assessment_required} · status: ${privacy.dpia_status}`
@@ -813,6 +854,7 @@ async function copyTextToClipboard(text) {
 
 async function postJson(url, body) {
   const headers = { "Content-Type": "application/json" };
+  if (apiAccessToken) headers["X-API-Token"] = apiAccessToken;
   if (currentAssessmentToken) headers["X-Assessment-Token"] = currentAssessmentToken;
   if (currentAssessmentId) headers["X-Assessment-Id"] = currentAssessmentId;
   const response = await fetch(url, {
@@ -822,6 +864,10 @@ async function postJson(url, body) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 && consoleConfig.api_auth_required) {
+      apiAccessToken = null;
+      persistApiToken();
+    }
     const detail = data.detail;
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail) || response.statusText);
   }
@@ -830,6 +876,7 @@ async function postJson(url, body) {
 
 async function getJson(url) {
   const headers = {};
+  if (apiAccessToken) headers["X-API-Token"] = apiAccessToken;
   if (currentAssessmentToken) headers["X-Assessment-Token"] = currentAssessmentToken;
   if (currentAssessmentId) headers["X-Assessment-Id"] = currentAssessmentId;
   const response = await fetch(url, { headers });

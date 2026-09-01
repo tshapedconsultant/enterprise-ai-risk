@@ -76,10 +76,15 @@ jobs:
       - name: Verify pack integrity
         run: |
           sha256sum -c artifacts/evidence-pack.sha256
-          python -c "import json,sys; p=json.load(open('artifacts/evidence-pack.json'));
-assert p.get('engine_version')=='deterministic-rules-v1';
-assert p.get('evidence_pack',{}).get('risk_decision');
-print('evidence pack gate ok', p['decision'], p['assessment_id'])"
+          python - <<'PY'
+          import json
+
+          with open("artifacts/evidence-pack.json", encoding="utf-8") as handle:
+              pack = json.load(handle)
+          assert pack.get("engine_version") == "deterministic-rules-v1"
+          assert pack.get("evidence_pack", {}).get("risk_decision")
+          print("evidence pack gate ok", pack["decision"], pack["assessment_id"])
+          PY
       - name: Build container (deployability gate)
         run: docker build -t enterprise-ai-risk:${{ github.sha }} .
       - name: Record deploy decision

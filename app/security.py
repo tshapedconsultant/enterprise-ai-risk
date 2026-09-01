@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -264,3 +265,35 @@ def redact_mapping(payload: dict) -> dict:
 
 def public_error_detail(request_id: str) -> str:
     return f"Request failed. Check server logs using request_id={request_id}"
+
+
+def _header_bearer(request: Request) -> Optional[str]:
+    raw = (request.headers.get("Authorization") or "").strip()
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return None
+
+
+def tokens_match(provided: Optional[str], expected: str) -> bool:
+    """Constant-time compare; False when either side is missing."""
+    if not expected or not provided:
+        return False
+    if len(provided) != len(expected):
+        secrets.compare_digest(expected, expected)
+        return False
+    return secrets.compare_digest(provided, expected)
+
+
+def require_api_token(request: Request) -> None:
+    """
+    Gate mutating console APIs when API_ACCESS_TOKEN is set.
+
+    Unset token = open assess-vendor (local demo). Set it for any networked deploy.
+    """
+    expected = get_settings().api_access_token
+    if not expected:
+        return
+    provided = request.headers.get("X-API-Token") or _header_bearer(request)
+    if not tokens_match(provided, expected):
+        logger.warning("api token rejected", extra={"event": "api.auth.denied"})
+        raise HTTPException(status_code=401, detail="API token required")

@@ -71,7 +71,7 @@ def test_webhook_logs_approval(client, sample_intake, caplog_app):
     body = {
         "status": "Done",
         "previous_status": "To Do",
-        "approver_email": "dpo@adevinta.com",
+        "approver_email": "dpo@example.com",
         "labels": ["legal-review"],
         "assessment_id": assessment_id,
         "issue_type": "Task",
@@ -80,4 +80,4 @@ def test_webhook_logs_approval(client, sample_intake, caplog_app):
     client.post("/api/v1/webhooks/jira", content=raw, headers=headers)
     events = [getattr(r, "event", None) for r in caplog_app.records]
     assert "jira.approval" in events
-    assert "store.save_assessment" in events
+    assert "store.update_assessment" in events

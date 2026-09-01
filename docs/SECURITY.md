@@ -17,7 +17,7 @@ flowchart LR
 
 | Zone | Trust |
 |------|--------|
-| Browser / intake fields | **Untrusted.** Anyone who can reach the process can POST (no SSO in this release). |
+| Browser / intake fields | **Untrusted.** `API_ACCESS_TOKEN` can gate assess/chat, but this release has no user identity, SSO, RBAC, or tenant claims. |
 | `app/scoring.py` | Trusted for triage. Must not read “instructions” from intake as orders. |
 | Chat LLM | Untrusted co-processor. Explains JSON; must not set `decision` / `risk_score`. |
 | Jira webhook caller | Untrusted until secret + corporate email checks pass. |
@@ -29,7 +29,7 @@ flowchart LR
 |--------|---------|----------------------------|---------------|
 | Spoofing | Fake Jira Done event | HMAC-SHA256 (`X-Hub-Signature-256`) + allow-listed `@{JIRA_APPROVER_DOMAIN}` mailboxes | No Atlassian egress IP allowlist |
 | Tampering | Change score via chat | Engine-only scoring; chat cannot write `DecisionRecord.decision` | LLM may still *say* “approved” in prose; UI/API JSON is source of truth |
-| Repudiation | “I never approved” | Approver email + timestamp on `DecisionRecord` | In-memory store; lost on restart; not append-only |
+| Repudiation | “I never approved” | Approver email + timestamp persisted in SQLite | `DecisionRecord` is not append-only and actor identity still comes from Jira |
 | Information disclosure | Chat dumps `.env` | Prompt forbids secrets; mock chat has no env | LLM jailbreak residual if key is set |
 | Denial of service | Huge intake / many assesses | Pydantic required fields; `API_RATE_LIMIT_PER_MINUTE` (default 60) on assess, chat, and webhook | Limit is per client IP; spoofed `X-Forwarded-For` is ignored unless the peer is in `TRUSTED_PROXIES` |
 | Elevation of privilege | Gmail closes Legal gate | Domain + allow-list | Forged `user@domain` if HMAC secret is stolen |
@@ -63,15 +63,19 @@ flowchart LR
 |---------|-----------|
 | HMAC-SHA256 of raw body (`X-Hub-Signature-256`) | Missing or mismatch → **401**. Shared `X-Jira-Secret` is not accepted. |
 | `X-Jira-Timestamp` | Outside ±5 minutes → **401** (replay window). |
-| `X-Jira-Event-Id` / nonce | Duplicate of a **successfully processed** event → **200** `{duplicate: true}`. 400 / 404 / 422 do **not** consume the id (Jira can retry). Event IDs persist in SQLite when `WEBHOOK_EVENT_STORE` is a file. |
-| `assessment_id` | Must be a UUID (body, header, or issue description). Malformed IDs → **400** before store lookup. |
-| Allow-listed approver mailboxes | `dpo@` / `secops@` / `aigov@` plus `JIRA_APPROVER_DOMAIN` (example `adevinta.com`), or `JIRA_ALLOWED_APPROVERS`. Domain suffix alone is not enough. |
+| `X-Jira-Event-Id` / nonce | Duplicate of a **successfully processed** event → **200** `{duplicate: true}`. 400 / 404 / 422 do **not** consume the id. Event IDs persist in `DATA_STORE`. |
+| Assessment binding | UUID from body/header/description, or persisted Jira `issue.key` mapping. Malformed IDs → **400** before lookup. No global “latest assessment”. |
+| Allow-listed approver mailboxes | `dpo@` / `secops@` / `aigov@` plus `JIRA_APPROVER_DOMAIN` (example `example.com`), or `JIRA_ALLOWED_APPROVERS`. Domain suffix alone is not enough. |
 | Transition | Must be open → Done. Done→Done is rejected. |
 | Project / issue | Key prefix must match `JIRA_PROJECT_KEY`. Missing department ticket ≠ approval. |
 
 Public `/api/v1/health` returns `{status: ok}` only. Diagnostic flags (`approver_domain`, `webhook_event_store`, LLM/Jira flags) live at `/api/v1/health/details`.
 
-**Still open:** PostgreSQL persistence for assessments, SSO, tenant isolation. `REQUIRE_ASSESSMENT_AUTH=true` binds chat/latest to `X-Assessment-Token`.
+**Still open:** SSO/RBAC, tenant isolation/RLS, and an append-only audit ledger. `API_ACCESS_TOKEN` is a deployment-wide gate, not user authentication. `REQUIRE_ASSESSMENT_AUTH=true` additionally binds chat/latest to each assessment token.
+
+Per-assessment tokens are returned once to the browser and persisted only as a
+SHA-256 digest in SQLite. `API_ACCESS_TOKEN` remains a process secret supplied
+through the environment and is never written to the database.
 
 Sequence: secret fails closed first; domain check runs inside `apply_approval()` only after a Done-like status.
 
@@ -82,7 +86,7 @@ Sequence: secret fails closed first; domain check runs inside `apply_approval()`
 **Still open (not in this PoC):**
 
 - No allowlist of Jira / Atlassian egress IPs.
-- Assessments remain in process memory. SQLite (`WEBHOOK_EVENT_STORE`) stores webhook event IDs only.
+- SQLite is a single-deployment durable store; production still needs PostgreSQL tenant isolation and immutable audit events.
 - Knowing a valid mailbox on `JIRA_APPROVER_DOMAIN` is enough to pass the domain check once the HMAC secret is stolen. The allow-list still has to match.
 
 ## Rate limiting and proxies

@@ -10,9 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ["JIRA_WEBHOOK_SECRET"] = "test-webhook-secret"
-os.environ["JIRA_APPROVER_DOMAIN"] = "adevinta.com"
+os.environ["JIRA_APPROVER_DOMAIN"] = "example.com"
 os.environ["REQUIRE_ASSESSMENT_AUTH"] = "false"
-os.environ["WEBHOOK_EVENT_STORE"] = str(Path(__file__).resolve().parent / "logs" / "webhook-events.sqlite")
+os.environ["API_ACCESS_TOKEN"] = ""
+os.environ["DATA_STORE"] = str(Path(__file__).resolve().parent / "logs" / "app.sqlite")
+os.environ["WEBHOOK_EVENT_STORE"] = ""
 os.environ["HEALTH_DETAILS_TOKEN"] = ""
 os.environ["LOG_LEVEL"] = "DEBUG"
 os.environ["LOG_FORMAT"] = "text"
@@ -113,6 +115,23 @@ def jira_issue_updated(
     if assessment_id:
         body["assessment_id"] = assessment_id
     return body
+
+
+def assessment_headers(response) -> dict:
+    """X-Assessment-Id / Token from an assess-vendor response."""
+    aid = response.json()["assessment_metadata"]["assessment_id"]
+    headers = {"X-Assessment-Id": aid}
+    token = response.headers.get("X-Assessment-Token")
+    if token:
+        headers["X-Assessment-Token"] = token
+    return headers
+
+
+def fetch_assessment(client: TestClient, assessment_id: str, token: str | None = None):
+    headers = {}
+    if token:
+        headers["X-Assessment-Token"] = token
+    return client.get(f"/api/v1/assessments/{assessment_id}", headers=headers)
 
 
 def post_jira_webhook(client: TestClient, body: dict, event_id: str, headers: dict | None = None):

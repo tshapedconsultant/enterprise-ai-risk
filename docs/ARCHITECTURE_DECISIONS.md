@@ -93,7 +93,8 @@ Non-goals of this document:
 **Limitation:**
 
 - Parent key `AIGOV-PARENT` is a placeholder until outbound create returns a real key.
-- Webhook currently binds to the **in-memory latest assessment**, not `issue.key` → `assessment_id`. Two concurrent vendors will collide.
+- Jira issue keys are persisted after outbound create and webhooks resolve
+  `issue.key` → `assessment_id`; dry-run events should still include the UUID.
 - Closing the Epic in Jira does not by itself update this app; the webhook must fire when a department **Task** moves to Done.
 - Engine triage on `assessment_metadata.decision` is **not rewritten** when humans approve (by design: preserve what the engine said).
 
@@ -117,19 +118,26 @@ Non-goals of this document:
 
 ---
 
-## ADR-6 — In-memory session store (deliberate for this release)
+## ADR-6 — SQLite assessment store for the reference deployment
 
 **Status:** Accepted
 
-**Decision:** `app/store.py` holds sessions in a dict keyed by `assessment_id` (intake + assessment + access token + TTL). Chat and page reload (`GET /api/v1/assessment/latest`) read by id or latest. Production durable store is **out of scope** (Future Improvements item 5).
+**Decision:** `app/store.py` persists intake, assessment/evidence pack, access
+token, Jira mappings, and webhook IDs in SQLite (`DATA_STORE`). All retrieval
+is keyed by explicit `assessment_id`; there is no global latest assessment.
 
-**Why:** Demo, interview, and local loop need zero infrastructure. The Pydantic models are already the persistence schema. Replacing the store later should not rewrite scoring or Jira logic.
+**Why:** Restart loss was the largest operational gap. SQLite keeps the local
+and portfolio deployment simple while making state durable and preserving
+Pydantic as the persistence boundary.
 
-**Rejected:** Shipping PostgreSQL/Redis in v1 “because production will need it.” That would dominate the narrative and hide the control-layer design.
+**Rejected:** Keeping process RAM as source of truth; adding Redis as source of
+truth; claiming SQLite provides production multi-tenancy.
 
-**Trade-off:** Restart wipes state. Multiple uvicorn workers do not share memory. Webhooks should pass `assessment_id`; binding to “latest in RAM” without it is fragile under concurrency.
+**Trade-off:** One local SQLite file is appropriate for one deployment and
+replica. Horizontal scaling and tenant isolation still require PostgreSQL.
 
-**Limitation:** Not multi-tenant, not audit-durable. Do not present this store as production-ready. Target: PostgreSQL + append-only `DecisionRecord` (never UPDATE in place).
+**Limitation:** No `tenant_id`, RLS, per-user ownership, or append-only
+`DecisionRecord`. A durable file is not an immutable audit system.
 
 ---
 
@@ -225,7 +233,10 @@ Non-goals of this document:
 
 **Trade-off:** Local tests set the webhook secret and approver domain in `tests/conftest.py`. Production must set both. Domain check is not SSO; anyone who can POST a matching corporate email string can forge an approval if the HMAC secret is stolen.
 
-**Limitation:** No authentication on `/assess-vendor` or `/chat`. Any local process can assess and chat. SSO/RACI is future work. Webhook event IDs persist in SQLite when `WEBHOOK_EVENT_STORE` is a file; assessments remain in process memory.
+**Limitation:** `API_ACCESS_TOKEN` can protect `/assess-vendor` and `/chat`, and
+per-assessment tokens protect retrieval, but these are shared capabilities—not
+user authentication, roles, or tenant authorization. SSO/RACI remains future
+work. All runtime state persists in `DATA_STORE`.
 
 ---
 
@@ -241,7 +252,8 @@ Non-goals of this document:
 
 **Trade-off:** Users may think tickets were created. The UI health banner states dry-run vs outbound active.
 
-**Limitation:** No retry queue, no idempotent create, no link-back of real keys into the in-memory tickets after a later credential add.
+**Limitation:** No retry queue or idempotent create. Real keys are persisted
+only when a live outbound create succeeds; dry-run tickets keep placeholders.
 
 ---
 
@@ -283,12 +295,12 @@ These are accepted for the current release, not accidental omissions:
 
 | Limitation | Consequence |
 |------------|-------------|
-| Single in-memory store | Restart loses data; not shared across workers |
-| No auth / SSO | Anyone with network access to the process can assess |
+| Single SQLite store | Durable on one mounted replica; not tenant-isolated or horizontally scalable |
+| Shared API token, no SSO/RBAC | Cannot attribute assess/chat actions to an application user |
 | No file attachments | SOC 2 / DPA / DPIA stay unverified |
 | No EU AI Act questionnaire | Annex III is a narrative string |
 | Keyword PII inference | Can miss or over-flag `data_processed` text |
-| Webhook not keyed by issue | Approvals apply to “current” session only |
+| Mutable decision row | Workflow updates are durable but not append-only/tamper-evident |
 | Jira assignee emails | Cloud often needs `accountId` |
 | Chat not a system of record | Trust the decision bar and JSON, not assistant prose |
 | Conservative score | High/Critical is the usual demo outcome |
@@ -322,7 +334,7 @@ All records: **Status: Accepted**.
 | Jira integration | 4 | Humans approve in Jira |
 | Jira integration | 13 | Jira dry-run by default |
 | Jira integration | 14 | Always three department gates |
-| Persistence and API | 6 | In-memory store (this release) |
+| Persistence and API | 6 | SQLite assessment store |
 | Persistence and API | 7 | Pydantic as contract |
 | UX and chat | 5 | FastAPI + static UI |
 | UX and chat | 11 | Optional / mocked chat |

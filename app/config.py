@@ -51,10 +51,13 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
 
     require_assessment_auth: bool = True
-    webhook_event_store: str = ":memory:"
+    api_access_token: str = ""
+    data_store: str = ""
+    webhook_event_store: str = ""
     webhook_event_ttl_seconds: int = 86400
     session_ttl_seconds: int = Field(default=24 * 3600)
     max_sessions: int = 200
+    compliance_frameworks: str = "gdpr,eu_ai_act,iso_42001,nist_ai_rmf"
 
     api_rate_limit_per_minute: int = 60
     trusted_proxies: str = ""
@@ -88,6 +91,9 @@ class Settings(BaseSettings):
         "openai_api_key",
         "openai_model",
         "webhook_event_store",
+        "data_store",
+        "api_access_token",
+        "compliance_frameworks",
         "health_details_token",
         "trusted_proxies",
     )
@@ -105,10 +111,15 @@ class Settings(BaseSettings):
     def _gate_type(cls, value: str) -> str:
         return value or "Task"
 
+    @field_validator("data_store")
+    @classmethod
+    def _data_store_path(cls, value: str) -> str:
+        return value or ""
+
     @field_validator("webhook_event_store")
     @classmethod
     def _event_store_path(cls, value: str) -> str:
-        return value or ":memory:"
+        return value or ""
 
     @field_validator("trusted_proxies")
     @classmethod
@@ -131,8 +142,17 @@ class Settings(BaseSettings):
         return self.jira_user_email or f"jira-bot@{self.jira_approver_domain}"
 
     @property
+    def effective_data_store(self) -> str:
+        """Unified SQLite path for assessments, Jira issue maps, and webhook event IDs."""
+        return self.data_store or self.webhook_event_store or "data/app.sqlite"
+
+    @property
     def webhook_event_store_is_memory(self) -> bool:
-        return self.webhook_event_store == ":memory:"
+        return self.effective_data_store == ":memory:"
+
+    @property
+    def api_auth_required(self) -> bool:
+        return bool(self.api_access_token)
 
     def trusted_proxy_networks(self):
         from app.netutil import parse_trusted_proxy_networks
@@ -193,24 +213,37 @@ def validate_startup() -> dict[str, Any]:
     half-configured process.
     """
     from app import store
+    from app.frameworks import parse_frameworks
 
     settings = get_settings()
-    event_mode = store.init_event_store()
+    try:
+        parse_frameworks(settings.compliance_frameworks)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+    event_mode = store.init_store()
     if event_mode == "memory":
         logger.warning(
-            "WEBHOOK_EVENT_STORE is unset; webhook replay protection is process-local",
-            extra={"event": "config.webhook_events.memory"},
+            "DATA_STORE is :memory:; assessments and webhook replay protection are process-local",
+            extra={"event": "config.data_store.memory"},
+        )
+    if not settings.api_access_token:
+        logger.warning(
+            "API_ACCESS_TOKEN is unset; POST /assess-vendor is open to anyone who can reach the process",
+            extra={"event": "config.api_token.missing"},
         )
     logger.info(
         "configuration validated",
         extra={
             "event": "config.validated",
             "approver_domain": settings.jira_approver_domain,
-            "webhook_event_store": event_mode,
+            "data_store": event_mode,
+            "api_auth_required": settings.api_auth_required,
+            "compliance_frameworks": settings.compliance_frameworks,
         },
     )
     return {
         "approver_domain": settings.jira_approver_domain,
         "webhook_event_store": event_mode,
+        "data_store": event_mode,
         "settings": settings,
     }

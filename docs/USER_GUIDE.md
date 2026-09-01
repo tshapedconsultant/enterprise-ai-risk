@@ -20,7 +20,7 @@ This is **not** legal advice and **not** a substitute for signed contracts or a 
 |-------|---------------------|
 | Rules engine | **No.** Only triage: `PENDING REVIEW`, `REQUIRES REMEDIATION`, or `ESCALATE`. |
 | Chat / LLM | **No.** Explains the report only. |
-| Legal (Jira) | Closes DPA/DPIA gate — `dpo@adevinta.com` queue |
+| Legal (Jira) | Closes DPA/DPIA gate — `dpo@example.com` queue |
 | SecOps (Jira) | Closes SOC 2 / security gate |
 | AI Governance (Jira) | Closes model risk gate |
 | All three closed | Workflow → **Department gates completed — awaiting final approval** |
@@ -121,7 +121,9 @@ Without Jira credentials, tickets appear as **dry-run payloads** in the UI and A
 
 When a reviewer closes a department Task in Jira, automation should call:
 
-`POST /api/v1/webhooks/jira` with approver email `@adevinta.com` and the correct label.
+`POST /api/v1/webhooks/jira` with an allow-listed approver under the configured
+`JIRA_APPROVER_DOMAIN` and the correct label. The persisted Jira issue key maps
+the event to its assessment; including `assessment_id` remains recommended.
 
 ## Chat modes
 
@@ -138,7 +140,8 @@ Use **Copy report** to paste a plain-text summary into email or a ticket. Not a 
 
 ## Limitations (current release)
 
-- Assessments live in an in-memory store (keyed by `assessment_id`, TTL-capped); lost on restart.
+- Assessments and workflow state persist in SQLite when `DATA_STORE` uses a durable volume.
+- `API_ACCESS_TOKEN` is a shared deployment gate, not SSO/RBAC or tenant authorization.
 - No file upload for SOC 2 or DPA PDFs (status is intake-based).
 - EU AI Act classification is narrative, not a structured questionnaire yet.
 
@@ -162,7 +165,7 @@ Do **not** skip the gate. Assign the `ai-governance-review` Task to the closest 
 - DPO jointly with the business owner, or
 - a standing risk or architecture committee member.
 
-The closer still needs an `@adevinta.com` account. Closing that ticket means someone accepted bias, explainability, and intended-use risk — not that a department with that name exists on the org chart.
+The closer still needs an `@example.com` account. Closing that ticket means someone accepted bias, explainability, and intended-use risk — not that a department with that name exists on the org chart.
 
 ### Why is residual risk still High after I checked the DPA box?
 
@@ -176,6 +179,6 @@ No. Chat explains the report. Closing Legal, SecOps, and AI Governance Tasks pro
 
 | Area | Queue |
 |------|-------|
-| Legal / DPIA | `dpo@adevinta.com` |
-| Security | `secops@adevinta.com` |
-| AI Governance | `aigov@adevinta.com` |
+| Legal / DPIA | `dpo@example.com` |
+| Security | `secops@example.com` |
+| AI Governance | `aigov@example.com` |

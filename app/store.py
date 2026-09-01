@@ -1,27 +1,26 @@
 """
-In-memory assessment store keyed by assessment_id (UUID).
+SQLite-backed assessment store keyed by assessment_id (UUID).
 
-Each assessment is isolated so concurrent users and overlapping Jira webhooks do not
-overwrite each other. A threading lock guards dict updates within one process.
-Sessions expire after SESSION_TTL_SECONDS and are capped at MAX_SESSIONS.
+Intake, AssessmentResponse, access token, and Jira issue.key mappings survive
+process restart when DATA_STORE (or WEBHOOK_EVENT_STORE) is a file path.
+TTL and MAX_SESSIONS are retention policy, not the storage model.
 
-This is still one process for assessment sessions (no PostgreSQL). Webhook event
-IDs are stored in SQLite when WEBHOOK_EVENT_STORE is a file path so multiple
-workers on a shared volume do not replay the same Jira event. Production still
-needs PostgreSQL for assessments (Future Improvements item 5).
+Chat and GET /assessments/{id} never fall back to a global "latest" row.
+Callers must pass assessment_id. Webhooks resolve by explicit id or a persisted
+issue.key mapping. The deprecated /assessment/latest route also requires an ID.
 
-The web console restores the latest session via GET /api/v1/assessment/latest and
-persists the access token in sessionStorage. Assessment token auth is on by default.
+PostgreSQL + append-only DecisionRecord remains the multi-tenant production target.
 """
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, List, Optional
 
 from app.config import get_settings
 from app.logging_config import get_logger
@@ -30,101 +29,143 @@ from app.models import AssessmentResponse, VendorInput
 logger = get_logger("app.store")
 
 _lock = threading.Lock()
-_sessions: Dict[str, Tuple[VendorInput, AssessmentResponse, str, float]] = {}
-_latest_id: Optional[str] = None
-_event_conn: Optional[sqlite3.Connection] = None
-_event_mode: str = "memory"
-
-
-def _init_event_store_locked() -> str:
-    global _event_conn, _event_mode
-    if _event_conn is not None:
-        return _event_mode
-    path = get_settings().webhook_event_store
-    if path == ":memory:":
-        _event_conn = sqlite3.connect(":memory:", check_same_thread=False, timeout=5.0)
-        _event_mode = "memory"
-    else:
-        parent = Path(path).parent
-        if parent and str(parent) not in {".", ""}:
-            parent.mkdir(parents=True, exist_ok=True)
-        _event_conn = sqlite3.connect(path, check_same_thread=False, timeout=5.0)
-        _event_mode = "sqlite"
-    _event_conn.execute(
-        "CREATE TABLE IF NOT EXISTS webhook_events ("
-        "event_id TEXT PRIMARY KEY NOT NULL, "
-        "seen_at REAL NOT NULL)"
-    )
-    _event_conn.commit()
-    return _event_mode
-
-
-def init_event_store() -> str:
-    """Open the webhook event database (SQLite file or in-memory). Idempotent."""
-    with _lock:
-        return _init_event_store_locked()
-
-
-def close_event_store() -> None:
-    """Drop the event-store connection so the next init can pick up a new path (tests)."""
-    global _event_conn, _event_mode
-    with _lock:
-        if _event_conn is not None:
-            _event_conn.close()
-            _event_conn = None
-            _event_mode = "memory"
-
-
-def event_store_mode() -> str:
-    with _lock:
-        return _event_mode
+_conn: Optional[sqlite3.Connection] = None
+_store_mode: str = "memory"
 
 
 def _now() -> float:
     return time.time()
 
 
+def _init_locked() -> str:
+    global _conn, _store_mode
+    if _conn is not None:
+        return _store_mode
+    path = get_settings().effective_data_store
+    if path == ":memory:":
+        _conn = sqlite3.connect(":memory:", check_same_thread=False, timeout=5.0)
+        _store_mode = "memory"
+    else:
+        parent = Path(path).parent
+        if parent and str(parent) not in {".", ""}:
+            parent.mkdir(parents=True, exist_ok=True)
+        _conn = sqlite3.connect(path, check_same_thread=False, timeout=5.0)
+        _store_mode = "sqlite"
+        _conn.execute("PRAGMA journal_mode=WAL")
+    _conn.execute("PRAGMA foreign_keys=ON")
+    _conn.execute(
+        "CREATE TABLE IF NOT EXISTS assessments ("
+        "assessment_id TEXT PRIMARY KEY NOT NULL, "
+        "intake_json TEXT NOT NULL, "
+        "assessment_json TEXT NOT NULL, "
+        "access_token TEXT NOT NULL, "
+        "updated_at REAL NOT NULL)"
+    )
+    _conn.execute(
+        "CREATE TABLE IF NOT EXISTS jira_issues ("
+        "issue_key TEXT PRIMARY KEY NOT NULL, "
+        "assessment_id TEXT NOT NULL, "
+        "FOREIGN KEY (assessment_id) REFERENCES assessments(assessment_id) ON DELETE CASCADE)"
+    )
+    _conn.execute(
+        "CREATE TABLE IF NOT EXISTS webhook_events ("
+        "event_id TEXT PRIMARY KEY NOT NULL, "
+        "seen_at REAL NOT NULL)"
+    )
+    _conn.commit()
+    return _store_mode
+
+
+def init_store() -> str:
+    """Open the SQLite database (file or in-memory). Idempotent."""
+    with _lock:
+        return _init_locked()
+
+
+def init_event_store() -> str:
+    """Alias kept for startup/config call sites."""
+    return init_store()
+
+
+def close_store() -> None:
+    """Drop the connection so the next init can pick up a new path (tests)."""
+    global _conn, _store_mode
+    with _lock:
+        if _conn is not None:
+            _conn.close()
+            _conn = None
+            _store_mode = "memory"
+
+
+def close_event_store() -> None:
+    close_store()
+
+
+def store_mode() -> str:
+    with _lock:
+        return _store_mode
+
+
+def event_store_mode() -> str:
+    return store_mode()
+
+
 def _purge_locked() -> None:
-    global _latest_id
+    assert _conn is not None
     settings = get_settings()
     cutoff = _now() - settings.session_ttl_seconds
-    expired = [aid for aid, row in _sessions.items() if row[3] < cutoff]
-    for aid in expired:
-        _sessions.pop(aid, None)
-        if _latest_id == aid:
-            _latest_id = None
-    if _event_conn is not None:
-        _event_conn.execute(
-            "DELETE FROM webhook_events WHERE seen_at < ?",
-            (_now() - settings.webhook_event_ttl_seconds,),
-        )
-        _event_conn.commit()
-    while len(_sessions) > settings.max_sessions:
-        oldest = min(_sessions.items(), key=lambda item: item[1][3])[0]
-        _sessions.pop(oldest, None)
-        if _latest_id == oldest:
-            _latest_id = None
-
-
-def _resolve_id(assessment_id: Optional[str]) -> Optional[str]:
-    if assessment_id:
-        return assessment_id
-    return _latest_id
+    _conn.execute("DELETE FROM assessments WHERE updated_at < ?", (cutoff,))
+    _conn.execute(
+        "DELETE FROM webhook_events WHERE seen_at < ?",
+        (_now() - settings.webhook_event_ttl_seconds,),
+    )
+    while True:
+        count = _conn.execute("SELECT COUNT(*) FROM assessments").fetchone()[0]
+        if count <= settings.max_sessions:
+            break
+        oldest = _conn.execute(
+            "SELECT assessment_id FROM assessments ORDER BY updated_at ASC LIMIT 1"
+        ).fetchone()
+        if not oldest:
+            break
+        _conn.execute("DELETE FROM assessments WHERE assessment_id = ?", (oldest[0],))
+    _conn.commit()
 
 
 def new_access_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _token_digest(token: str) -> str:
+    return "sha256:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def save(intake: VendorInput, assessment: AssessmentResponse, access_token: Optional[str] = None) -> str:
     """Persist intake + assessment. Returns the access token for this assessment."""
-    global _latest_id
     assessment_id = assessment.assessment_metadata.assessment_id
     token = access_token or new_access_token()
     with _lock:
+        _init_locked()
+        assert _conn is not None
         _purge_locked()
-        _sessions[assessment_id] = (intake, assessment, token, _now())
-        _latest_id = assessment_id
+        _conn.execute(
+            "INSERT INTO assessments"
+            "(assessment_id, intake_json, assessment_json, access_token, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(assessment_id) DO UPDATE SET "
+            "intake_json=excluded.intake_json, "
+            "assessment_json=excluded.assessment_json, "
+            "access_token=excluded.access_token, "
+            "updated_at=excluded.updated_at",
+            (
+                assessment_id,
+                intake.model_dump_json(),
+                assessment.model_dump_json(),
+                _token_digest(token),
+                _now(),
+            ),
+        )
+        _conn.commit()
     meta = assessment.assessment_metadata
     record = assessment.decision_record
     logger.info(
@@ -136,6 +177,7 @@ def save(intake: VendorInput, assessment: AssessmentResponse, access_token: Opti
             "decision": meta.decision,
             "risk_score": record.risk_score if record else None,
             "workflow_status": record.workflow_status if record else None,
+            "store": store_mode(),
         },
     )
     return token
@@ -145,10 +187,19 @@ def save_assessment(assessment: AssessmentResponse) -> None:
     """Replace the assessment after a Jira webhook without changing intake or token."""
     assessment_id = assessment.assessment_metadata.assessment_id
     with _lock:
-        if assessment_id not in _sessions:
+        _init_locked()
+        assert _conn is not None
+        row = _conn.execute(
+            "SELECT intake_json, access_token FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None:
             raise KeyError(f"No session for assessment_id={assessment_id}")
-        intake, _, token, _created = _sessions[assessment_id]
-        _sessions[assessment_id] = (intake, assessment, token, _now())
+        _conn.execute(
+            "UPDATE assessments SET assessment_json = ?, updated_at = ? WHERE assessment_id = ?",
+            (assessment.model_dump_json(), _now(), assessment_id),
+        )
+        _conn.commit()
     record = assessment.decision_record
     logger.info(
         "assessment updated",
@@ -162,32 +213,131 @@ def save_assessment(assessment: AssessmentResponse) -> None:
     )
 
 
-def get_assessment(assessment_id: Optional[str] = None) -> Optional[AssessmentResponse]:
-    """Return one assessment by id, or the most recently saved when id is omitted."""
+def update_assessment(
+    assessment_id: str,
+    updater: Callable[[AssessmentResponse], AssessmentResponse],
+) -> AssessmentResponse:
+    """Serialize read-modify-write updates so concurrent webhooks do not lose a gate."""
     with _lock:
-        _purge_locked()
-        resolved = _resolve_id(assessment_id)
-        if resolved and resolved in _sessions:
-            return _sessions[resolved][1]
+        _init_locked()
+        assert _conn is not None
+        row = _conn.execute(
+            "SELECT assessment_json FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"No session for assessment_id={assessment_id}")
+        current = AssessmentResponse.model_validate_json(row[0])
+        updated = updater(current)
+        if updated.assessment_metadata.assessment_id != assessment_id:
+            raise ValueError("Assessment updater cannot change assessment_id")
+        _conn.execute(
+            "UPDATE assessments SET assessment_json = ?, updated_at = ? "
+            "WHERE assessment_id = ?",
+            (updated.model_dump_json(), _now(), assessment_id),
+        )
+        _conn.commit()
+    record = updated.decision_record
+    logger.info(
+        "assessment updated",
+        extra={
+            "event": "store.update_assessment",
+            "assessment_id": assessment_id,
+            "vendor": updated.assessment_metadata.vendor,
+            "workflow_status": record.workflow_status if record else None,
+            "human_decision": record.human_decision if record else None,
+        },
+    )
+    return updated
+
+
+def get_assessment(assessment_id: Optional[str] = None) -> Optional[AssessmentResponse]:
+    """Return one assessment by id. Does not fall back to a global latest row."""
+    if not assessment_id:
         return None
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        _purge_locked()
+        row = _conn.execute(
+            "SELECT assessment_json FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return AssessmentResponse.model_validate_json(row[0])
 
 
 def get_intake(assessment_id: Optional[str] = None) -> Optional[VendorInput]:
-    """Return intake paired with the given assessment (or latest)."""
+    """Return intake paired with the given assessment."""
+    if not assessment_id:
+        return None
     with _lock:
+        _init_locked()
+        assert _conn is not None
         _purge_locked()
-        resolved = _resolve_id(assessment_id)
-        if resolved and resolved in _sessions:
-            return _sessions[resolved][0]
+        row = _conn.execute(
+            "SELECT intake_json FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return VendorInput.model_validate_json(row[0])
+
+
+def _get_access_token_digest(assessment_id: Optional[str] = None) -> Optional[str]:
+    if not assessment_id:
         return None
-
-
-def get_access_token(assessment_id: Optional[str] = None) -> Optional[str]:
     with _lock:
-        resolved = _resolve_id(assessment_id)
-        if resolved and resolved in _sessions:
-            return _sessions[resolved][2]
+        _init_locked()
+        assert _conn is not None
+        row = _conn.execute(
+            "SELECT access_token FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        return row[0] if row else None
+
+
+def bind_jira_issue(issue_key: str, assessment_id: str) -> None:
+    """Map a Jira issue.key to an assessment so webhooks do not need a global latest."""
+    key = (issue_key or "").strip()
+    if not key or not assessment_id:
+        return
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        existing = _conn.execute(
+            "SELECT assessment_id FROM jira_issues WHERE issue_key = ?",
+            (key,),
+        ).fetchone()
+        if existing and existing[0] != assessment_id:
+            raise ValueError(
+                f"Jira issue {key} is already bound to another assessment"
+            )
+        _conn.execute(
+            "INSERT OR IGNORE INTO jira_issues(issue_key, assessment_id) VALUES (?, ?)",
+            (key, assessment_id),
+        )
+        _conn.commit()
+
+
+def bind_jira_issues(issue_keys: List[str], assessment_id: str) -> None:
+    for key in issue_keys:
+        bind_jira_issue(key, assessment_id)
+
+
+def resolve_jira_issue(issue_key: str) -> Optional[str]:
+    key = (issue_key or "").strip()
+    if not key:
         return None
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        row = _conn.execute(
+            "SELECT assessment_id FROM jira_issues WHERE issue_key = ?",
+            (key,),
+        ).fetchone()
+        return row[0] if row else None
 
 
 def assessment_auth_required() -> bool:
@@ -198,50 +348,53 @@ def assessment_auth_required() -> bool:
 def token_matches(assessment_id: Optional[str], provided: Optional[str]) -> bool:
     if not assessment_auth_required():
         return True
-    expected = get_access_token(assessment_id)
+    expected = _get_access_token_digest(assessment_id)
     if not expected or not provided:
         return False
-    return secrets.compare_digest(expected, provided)
+    candidate = _token_digest(provided) if expected.startswith("sha256:") else provided
+    return secrets.compare_digest(expected, candidate)
 
 
 def remember_event(event_id: str) -> bool:
     """Return True if this event is new; False if it was already processed."""
     now = _now()
     with _lock:
-        _init_event_store_locked()
+        _init_locked()
+        assert _conn is not None
         _purge_locked()
-        assert _event_conn is not None
-        cursor = _event_conn.execute(
+        cursor = _conn.execute(
             "INSERT OR IGNORE INTO webhook_events(event_id, seen_at) VALUES (?, ?)",
             (event_id, now),
         )
-        _event_conn.commit()
+        _conn.commit()
         return cursor.rowcount == 1
 
 
 def forget_event(event_id: str) -> None:
     """Drop a recorded event id so a later retry can be processed (failed apply)."""
     with _lock:
-        if _event_conn is None:
+        if _conn is None:
             return
-        _event_conn.execute("DELETE FROM webhook_events WHERE event_id = ?", (event_id,))
-        _event_conn.commit()
+        _conn.execute("DELETE FROM webhook_events WHERE event_id = ?", (event_id,))
+        _conn.commit()
 
 
 def count() -> int:
-    """Number of assessments currently in memory (tests / webhook disambiguation)."""
+    """Number of assessments currently retained (tests / webhook disambiguation)."""
     with _lock:
+        _init_locked()
+        assert _conn is not None
         _purge_locked()
-        return len(_sessions)
+        return int(_conn.execute("SELECT COUNT(*) FROM assessments").fetchone()[0])
 
 
 def clear() -> None:
     """Drop all session state. Used by tests; not exposed as an API."""
-    global _latest_id
     with _lock:
-        _sessions.clear()
-        _latest_id = None
-        if _event_conn is not None:
-            _event_conn.execute("DELETE FROM webhook_events")
-            _event_conn.commit()
+        _init_locked()
+        assert _conn is not None
+        _conn.execute("DELETE FROM jira_issues")
+        _conn.execute("DELETE FROM assessments")
+        _conn.execute("DELETE FROM webhook_events")
+        _conn.commit()
     logger.debug("session cleared", extra={"event": "store.clear"})

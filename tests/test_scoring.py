@@ -90,7 +90,7 @@ def test_jira_epic_and_department_subtasks():
         for t in result.jira_tickets
         if t.fields.department != "parent"
     ]
-    assert all(e and e.endswith("@adevinta.com") for e in emails)
+    assert all(e and e.endswith("@example.com") for e in emails)
 
 
 def test_same_intake_is_stable_except_ids_and_timestamps():

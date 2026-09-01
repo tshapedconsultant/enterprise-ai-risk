@@ -17,14 +17,14 @@ This document describes **how** the system is built. For **why**, trade-offs, an
 ┌─────────────────┐     POST /assess-vendor      ┌──────────────────┐
 │  static/        │ ───────────────────────────► │  app/main.py     │
 │  index.html     │                                │  FastAPI         │
-│  app.js         │     GET /assessment/latest     └────────┬─────────┘
+│  app.js         │   GET /assessments/{id}        └────────┬─────────┘
 └─────────────────┘ ◄───────────────────────────────────────┤
                                                               │
                     ┌─────────────────────────────────────────┼─────────────────────────┐
                     │                                         │                         │
                     ▼                                         ▼                         ▼
              app/scoring.py                          app/jira_workflow.py          app/store.py
-             evaluate() → eval_dpa / eval_dpia / …   build_epic_and_subtasks()     in-memory session
+             evaluate() → eval_dpa / eval_dpia / …   build_epic_and_subtasks()     SQLite repository
              ENGINE_VERSION                        publish_to_jira()             intake + assessment
                                                    apply_approval()
                     │                                         │
@@ -43,7 +43,7 @@ flowchart LR
   API --> Store[store.py]
   JiraCloud -->|POST /webhooks/jira| API
   API --> Store
-  UI -->|GET /assessment/latest| API
+  UI -->|GET /assessments/id| API
 ```
 
 ## Scoring engine (`app/scoring.py`)
@@ -164,9 +164,23 @@ Key types:
 - `JiraTicket` / `JiraFields` — Jira REST v3 shape + `department` metadata
 - `GovernanceEvidencePack` — machine-readable audit bundle
 
-## Session store (`app/store.py`)
+## Assessment store (`app/store.py`)
 
-In-memory dict keyed by `assessment_id`, with TTL, session cap, and optional access token. **Not** suitable for horizontal scaling or persistence. Production: PostgreSQL + immutable append-only `DecisionRecord` events.
+SQLite persists intake, assessment/evidence pack, access token, Jira issue map,
+and webhook event IDs under `DATA_STORE`. Rows are keyed by `assessment_id`,
+TTL-capped, and recover after process restart. Retrieval never falls back to a
+global “latest” row.
+
+This closes restart loss for a single deployment, not production tenancy:
+SQLite has no tenant ownership/RLS and `DecisionRecord` is still updated in
+place. Production remains PostgreSQL + immutable append-only decision events.
+
+## Framework catalog (`app/frameworks.py`)
+
+`COMPLIANCE_FRAMEWORKS` scopes optional EU AI Act, ISO/IEC 42001, and NIST AI
+RMF alignment sections. GDPR remains mandatory because the v1 rule engine
+implements DPA, DPIA, Art. 9, Art. 22, retention, and transfer controls.
+Alignment metadata is not represented as a separate certification engine.
 
 ## Web console (`static/`)
 

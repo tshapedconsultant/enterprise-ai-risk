@@ -7,8 +7,8 @@ from app.config import ConfigurationError, Settings, get_settings, validate_star
 
 def test_validate_startup_ok():
     result = validate_startup()
-    assert result["approver_domain"] == "adevinta.com"
-    assert result["webhook_event_store"] == "sqlite"
+    assert result["approver_domain"] == "example.com"
+    assert result["data_store"] == "sqlite"
     assert result["settings"].jira_project_key == "AIGOV"
     assert result["settings"].api_rate_limit_per_minute == 60
 
@@ -42,3 +42,9 @@ def test_invalid_trusted_proxies_fail_settings(monkeypatch):
     monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
     with pytest.raises(ConfigurationError, match="TRUSTED_PROXIES"):
         get_settings()
+
+
+def test_validate_startup_rejects_unknown_framework(monkeypatch):
+    monkeypatch.setenv("COMPLIANCE_FRAMEWORKS", "gdpr,imaginary-standard")
+    with pytest.raises(ConfigurationError, match="Unknown COMPLIANCE_FRAMEWORKS"):
+        validate_startup()

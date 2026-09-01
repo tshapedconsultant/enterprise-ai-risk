@@ -27,6 +27,7 @@ import urllib.request
 
 BASE = os.getenv("CONSOLE_URL", "http://127.0.0.1:8000")
 SECRET = os.getenv("JIRA_WEBHOOK_SECRET", "test-webhook-secret")
+DOMAIN = os.getenv("JIRA_APPROVER_DOMAIN", "example.com").lstrip("@")
 
 
 def post(
@@ -113,7 +114,7 @@ def main() -> int:
     print(
         post(
             "/api/v1/webhooks/jira",
-            webhook_body("dpo@adevinta.com", ["legal-review"], assessment_id),
+            webhook_body(f"dpo@{DOMAIN}", ["legal-review"], assessment_id),
             secret="wrong",
             event_id="sim-wrong",
         )
@@ -121,9 +122,9 @@ def main() -> int:
 
     print("4) Close three authorized department mailboxes")
     for email, label, event_id in (
-        ("dpo@adevinta.com", "legal-review", "sim-legal"),
-        ("secops@adevinta.com", "infosec", "sim-sec"),
-        ("aigov@adevinta.com", "ai-governance-review", "sim-gov"),
+        (f"dpo@{DOMAIN}", "legal-review", "sim-legal"),
+        (f"secops@{DOMAIN}", "infosec", "sim-sec"),
+        (f"aigov@{DOMAIN}", "ai-governance-review", "sim-gov"),
     ):
         code, body = post(
             "/api/v1/webhooks/jira",

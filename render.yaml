@@ -1,0 +1,28 @@
+# One-click public demo: https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk
+# Recipients open the HTTPS URL in a browser. No Python, Git, or Jira required.
+# Persistent disks require a paid Render instance; this blueprint uses Starter.
+services:
+  - type: web
+    name: enterprise-ai-risk
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/v1/health
+    disk:
+      name: assessment-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: JIRA_APPROVER_DOMAIN
+        value: example.com
+      - key: JIRA_WEBHOOK_SECRET
+        generateValue: true
+      - key: REQUIRE_ASSESSMENT_AUTH
+        value: "true"
+      - key: API_ACCESS_TOKEN
+        generateValue: true
+      - key: DATA_STORE
+        value: /data/app.sqlite
+      - key: COMPLIANCE_FRAMEWORKS
+        value: gdpr,eu_ai_act,iso_42001,nist_ai_rmf
+      - key: API_RATE_LIMIT_PER_MINUTE
+        value: "180"

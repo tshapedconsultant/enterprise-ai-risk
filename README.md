@@ -13,6 +13,18 @@ FastAPI service and single-page console for **third-party AI vendor governance**
 - **Audit trail:** `DecisionRecord` captures rules, approvers, and workflow status.
 - **Readable console:** tabbed report, audit chips, expandable rows, structured assistant card (vanilla `static/` — no SPA build).
 
+## Share a demo link (no coding for guests)
+
+You cannot share `http://127.0.0.1:8000` — that only works on your PC. Host the console once, then send people an **https://** URL. They open it in a browser and use the form. They do not install Python or Git.
+
+1. Open **[Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk)** (Render account and GitHub login). The blueprint uses a paid Starter instance because persistent disks are not available on the free plan.
+2. Click **Apply**. Wait until the service is live (a few minutes).
+3. Copy the URL Render shows (looks like `https://enterprise-ai-risk.onrender.com`) and send that.
+
+The first visit after idle time can take about 30 seconds (free instances sleep). Assessments use SQLite and survive an application restart when `DATA_STORE` is on persistent storage. This remains a Demo / PoC rather than a production tenant: there is no SSO/RBAC or tenant database isolation. Set `API_ACCESS_TOKEN` for any networked demo.
+
+Chat stays on the mock assistant unless you add `OPENAI_API_KEY` in Render → Environment.
+
 ## Quick start
 
 ### Windows (PowerShell)
@@ -52,10 +64,11 @@ Equivalent without Compose:
 
 ```bash
 docker build -t enterprise-ai-risk .
-docker run --rm -p 8000:8000 --env-file .env enterprise-ai-risk
+docker run --rm -p 8000:8000 --env-file .env -v enterprise-ai-risk-data:/data \
+  -e DATA_STORE=/data/app.sqlite enterprise-ai-risk
 ```
 
-The console is still a **Demo / PoC**: in-memory assessments with TTL, not a multi-user production deployment.
+The console is still a **Demo / PoC**: SQLite is restart-safe and assessment IDs are isolated, but there is no SSO/RBAC, tenant ownership, PostgreSQL row-level security, or append-only audit ledger.
 
 ## Architecture (summary)
 
@@ -63,7 +76,7 @@ The console is still a **Demo / PoC**: in-memory assessments with TTL, not a mul
 Intake form → POST /assess-vendor
     → scoring.evaluate()     # deterministic controls, score 1–5, triage decision
     → jira_workflow          # Epic + Legal / SecOps / AI Gov Tasks
-    → store (in-memory)      # session for chat + page reload
+    → store (SQLite)        # assessment, token, workflow, Jira issue mapping
     → optional Jira POST     # if JIRA_BASE_URL + token set
 
 Jira department Task closed → POST /webhooks/jira
@@ -79,9 +92,10 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHIT
 |--------|------|---------|
 | `GET` | `/` | Web console (`static/index.html`) |
 | `GET` | `/api/v1/health` | Liveness, LLM mode, Jira outbound status |
-| `GET` | `/api/v1/assessment/latest` | Restore session after page reload |
+| `GET` | `/api/v1/config` | Non-secret UI flags and enabled frameworks |
+| `GET` | `/api/v1/assessments/{assessment_id}` | Restore one assessment using its token |
 | `POST` | `/api/v1/assess-vendor` | Run triage; return full governance JSON |
-| `POST` | `/api/v1/chat` | Q&A about the latest assessment |
+| `POST` | `/api/v1/chat` | Q&A scoped to the request's `assessment_id` |
 | `POST` | `/api/v1/webhooks/jira` | Inbound human approval from Jira |
 
 ### Engine triage decisions (never final APPROVE)
@@ -103,12 +117,13 @@ Content-Type: application/json
 
 {
   "status": "Done",
-  "approver_email": "j.perez@adevinta.com",
-  "labels": ["legal-review"]
+  "approver_email": "j.perez@example.com",
+  "labels": ["legal-review"],
+  "assessment_id": "ASSESSMENT_UUID"
 }
 ```
 
-Repeat for `infosec` and `ai-governance-review`. Non-`@adevinta.com` emails are rejected.
+Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are rejected.
 
 ## Configuration
 
@@ -121,7 +136,10 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@adevinta.com` emails are 
 | `JIRA_API_TOKEN` | Jira API token |
 | `JIRA_WEBHOOK_SECRET` | Required at startup; HMAC-SHA256 of the raw body (`X-Hub-Signature-256`) |
 | `JIRA_APPROVER_DOMAIN` | Required at startup; corporate mailbox suffix for human approvers |
-| `WEBHOOK_EVENT_STORE` | Optional SQLite path for webhook event IDs (replay protection) |
+| `DATA_STORE` | SQLite path for assessments, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
+| `API_ACCESS_TOKEN` | Optional bearer / `X-API-Token` gate for assess and chat; required for networked demos |
+| `REQUIRE_ASSESSMENT_AUTH` | Per-assessment token protection (default `true`) |
+| `COMPLIANCE_FRAMEWORKS` | Enabled metadata/pack sections: GDPR plus EU AI Act, ISO 42001, NIST AI RMF alignment |
 | `TRUSTED_PROXIES` | Comma-separated proxy IPs/CIDRs; required before `X-Forwarded-For` is trusted |
 | `LOG_LEVEL` | Log verbosity (`INFO` default) |
 | `LOG_FORMAT` | `text` or `json` (default `text`) |
@@ -136,7 +154,8 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@adevinta.com` emails are 
 | `app/jira_workflow.py` | Epic + department Task payloads + webhook logic |
 | `app/models.py` | Pydantic schemas (intake, assessment, Jira) |
 | `app/llm.py` | Chat only; never scores |
-| `app/store.py` | In-memory session (replace for production) |
+| `app/store.py` | SQLite assessment, workflow, token, Jira mapping, and webhook event store |
+| `app/frameworks.py` | Framework catalog and evidence-pack scoping |
 | `app/logging_config.py` | Central logging (`LOG_LEVEL`, `LOG_FORMAT`, `LOG_FILE`) |
 | `static/` | Web console (`index.html`, `styles.css`, `app.js`) — intake form, tabbed report, audit chips, chat |
 | `Dockerfile` / `docker-compose.yml` | Container image (see [DEPLOYMENT.md](docs/DEPLOYMENT.md)) |
@@ -153,13 +172,12 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@adevinta.com` emails are 
 - [Deployment](docs/DEPLOYMENT.md) — Docker, Cloud Run, ECS, Kubernetes
 - [Future improvements](docs/FUTURE_IMPROVEMENTS.md) — production roadmap
 - [V2 improvements](docs/V2_IMPROVEMENTS.md) — persistence, DPIA Workspace, evidence repository
-- [User guide (Word)](docs/User_Guide_AI_Vendor_Risk.docx) — `python docs/build_user_guide.py`
-- [Future improvements (Word)](docs/Future_Improvements_AI_Governance.docx) — `python docs/build_future_improvements.py`
-- [V2 improvements (Word)](docs/V2_Improvements_AI_Governance.docx) — `python docs/build_v2_improvements.py`
+- Optional Word export — Markdown is canonical: `python scripts/export_docx.py docs/USER_GUIDE.md --out-dir artifacts/docs`
+- [Contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md), and [MIT license](LICENSE)
 
 ## Production notes
 
-- Replace `app/store.py` with PostgreSQL + immutable audit log for multi-user and restart safety.
+- Replace SQLite with PostgreSQL + tenant row-level security and an immutable audit log before production.
 - Map Jira `assignee.emailAddress` to `accountId` before outbound create.
 - Configure Jira automation to POST to `/api/v1/webhooks/jira` on department Task Done.
 - Outbound Jira errors do **not** fail the assessment (see [resilience](docs/ARCHITECTURE.md#outbound-resilience)).

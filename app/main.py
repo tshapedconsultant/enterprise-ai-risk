@@ -5,10 +5,11 @@ Endpoints:
   GET  /                              Single-page console (static/index.html)
   GET  /api/v1/health                 Public liveness
   GET  /api/v1/health/details         Diagnostic (token-protected when configured)
-  GET  /api/v1/assessment/latest      Restore in-memory session after reload
+  GET  /api/v1/config                 Public console config (no secrets)
+  GET  /api/v1/assessments/{id}       Restore one assessment by UUID
   POST /api/v1/assess-vendor          Deterministic triage + Jira ticket payloads
   POST /api/v1/webhooks/jira          Inbound human approvals from Jira
-  POST /api/v1/chat                   Follow-up Q&A on the current assessment
+  POST /api/v1/chat                   Follow-up Q&A on a specific assessment
 
 Web console (static/):
   Left  — vendor intake form (high-contrast fields, expandable privacy sections)
@@ -37,6 +38,7 @@ from app.jira_workflow import (
     parse_webhook_event,
     publish_to_jira,
 )
+from app.frameworks import framework_status, stamp_assessment
 from app.llm import answer_question, llm_enabled, run_assessment
 from app.logging_config import configure_logging, get_logger
 from app.models import AssessmentResponse, ChatRequest, ChatResponse, VendorInput
@@ -45,6 +47,7 @@ from app.security import (
     event_id_from,
     new_request_id,
     public_error_detail,
+    require_api_token,
     verify_timestamp,
     verify_webhook_hmac,
     validate_assessment_id,
@@ -72,7 +75,7 @@ async def lifespan(_app: FastAPI):
             "llm_enabled": llm_enabled(),
             "jira_outbound": jira_configured(),
             "approver_domain": config["approver_domain"],
-            "webhook_event_store": config["webhook_event_store"],
+            "data_store": config["data_store"],
         },
     )
     yield
@@ -82,7 +85,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Enterprise AI Risk Assessment API",
     description="API for automated third-party AI vendor governance, chat Q&A, and Jira integration.",
-    version="1.3.0",
+    version="1.4.0",
     lifespan=lifespan,
 )
 
@@ -123,19 +126,34 @@ async def health_details(
         "scoring_engine": "deterministic-rules-v1",
         "jira_outbound": jira_configured(),
         "approver_domain": settings.jira_approver_domain,
-        "webhook_event_store": store.event_store_mode(),
+        "webhook_event_store": store.store_mode(),
+        "data_store": store.store_mode(),
+        "api_auth_required": settings.api_auth_required,
+        "frameworks": framework_status(),
     }
     return payload
 
 
-@app.get("/api/v1/assessment/latest")
-async def latest_assessment(
-    x_assessment_token: Optional[str] = Header(default=None, alias="X-Assessment-Token"),
-    x_assessment_id: Optional[str] = Header(default=None, alias="X-Assessment-Id"),
+@app.get("/api/v1/config")
+async def public_config() -> dict:
+    """Non-secret flags the console needs (approver domain, frameworks, API gate)."""
+    settings = get_settings()
+    return {
+        "approver_domain": settings.jira_approver_domain,
+        "api_auth_required": settings.api_auth_required,
+        "assessment_auth_required": settings.require_assessment_auth,
+        "llm_enabled": llm_enabled(),
+        "jira_outbound": jira_configured(),
+        "data_store": store.store_mode(),
+        "frameworks": framework_status(),
+    }
+
+
+def _assessment_payload(
+    assessment_id: str,
+    assessment_token: Optional[str],
 ) -> dict:
-    """Return the in-memory assessment so the UI can restore state on page reload."""
-    assessment_id = validate_assessment_id(x_assessment_id)
-    if not store.token_matches(assessment_id, x_assessment_token):
+    if not store.token_matches(assessment_id, assessment_token):
         raise HTTPException(status_code=401, detail="Assessment token required")
     assessment = store.get_assessment(assessment_id)
     intake = store.get_intake(assessment_id)
@@ -148,9 +166,33 @@ async def latest_assessment(
     }
 
 
+@app.get("/api/v1/assessments/{assessment_id}")
+async def get_assessment(
+    assessment_id: str,
+    x_assessment_token: Optional[str] = Header(default=None, alias="X-Assessment-Token"),
+) -> dict:
+    """Restore one assessment by UUID. It never selects another assessment."""
+    validated = validate_assessment_id(assessment_id)
+    assert validated is not None
+    return _assessment_payload(validated, x_assessment_token)
+
+
+@app.get("/api/v1/assessment/latest", deprecated=True)
+async def latest_assessment(
+    x_assessment_token: Optional[str] = Header(default=None, alias="X-Assessment-Token"),
+    x_assessment_id: Optional[str] = Header(default=None, alias="X-Assessment-Id"),
+) -> dict:
+    """Restore one assessment by id. Never returns another browser's session."""
+    assessment_id = validate_assessment_id(x_assessment_id)
+    if not assessment_id:
+        return {"assessment": None, "intake": None, "llm_enabled": llm_enabled()}
+    return _assessment_payload(assessment_id, x_assessment_token)
+
+
 @app.post("/api/v1/assess-vendor")
 async def assess_vendor_risk(payload: VendorInput, request: Request):
     enforce_rate_limit(request, "assess")
+    require_api_token(request)
     request_id = getattr(request.state, "request_id", new_request_id())
     logger.info(
         "assess-vendor request",
@@ -158,6 +200,7 @@ async def assess_vendor_risk(payload: VendorInput, request: Request):
     )
     try:
         assessment, _used_llm = run_assessment(payload)
+        stamp_assessment(assessment)
         try:
             jira_result = publish_to_jira(assessment.jira_tickets)
         except Exception as jira_exc:
@@ -175,8 +218,25 @@ async def assess_vendor_risk(payload: VendorInput, request: Request):
             assessment.decision_record.decision_basis = list(assessment.decision_record.decision_basis) + [
                 f"JIRA_PUBLISH:{jira_result.get('published')}"
             ]
+        if assessment.evidence_pack:
+            assessment.evidence_pack.decision_audit_trail = (
+                assessment.decision_record.model_dump()
+                if assessment.decision_record
+                else {}
+            )
+            assessment.evidence_pack.jira_tickets = [
+                ticket.model_dump() for ticket in assessment.jira_tickets
+            ]
         token = store.save(payload, assessment)
         meta = assessment.assessment_metadata
+        published_keys = [k for k in (jira_result.get("keys") or []) if k]
+        if not published_keys:
+            published_keys = [
+                ticket.fields.issue_key
+                for ticket in assessment.jira_tickets
+                if ticket.fields.issue_key
+            ]
+        store.bind_jira_issues(published_keys, meta.assessment_id)
         logger.info(
             "assess-vendor complete",
             extra={
@@ -245,15 +305,21 @@ async def jira_webhook(
     assessment_id = validate_assessment_id(
         x_assessment_id or body.get("assessment_id") or parsed.assessment_id
     )
-    if not assessment_id and store.count() == 1:
-        lone = store.get_assessment()
-        if lone:
-            assessment_id = lone.assessment_metadata.assessment_id
+    mapped_assessment_id = (
+        store.resolve_jira_issue(parsed.key) if parsed.key else None
+    )
+    if assessment_id and mapped_assessment_id and assessment_id != mapped_assessment_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Jira issue {parsed.key} is bound to another assessment",
+        )
+    if not assessment_id:
+        assessment_id = mapped_assessment_id
     if not assessment_id:
         logger.warning("jira webhook missing assessment_id", extra={"event": "api.webhook.no_id"})
         raise HTTPException(
             status_code=400,
-            detail="assessment_id is required (body, X-Assessment-Id header, or Assessment-ID in issue description)",
+            detail="assessment_id is required (body, X-Assessment-Id, Assessment-ID in description, or a mapped issue.key)",
         )
 
     assessment = store.get_assessment(assessment_id)
@@ -272,7 +338,10 @@ async def jira_webhook(
         return {"ok": True, "duplicate": True, "event_id": event_id}
 
     try:
-        updated = apply_approval(assessment, body)
+        updated = store.update_assessment(
+            assessment_id,
+            lambda current: apply_approval(current, body),
+        )
     except ValueError as exc:
         store.forget_event(event_id)
         logger.warning(
@@ -286,7 +355,8 @@ async def jira_webhook(
         logger.exception("jira webhook error", extra={"event": "api.webhook.error", "request_id": request_id})
         raise HTTPException(status_code=400, detail=public_error_detail(request_id)) from None
 
-    store.save_assessment(updated)
+    if parsed.key:
+        store.bind_jira_issue(parsed.key, assessment_id)
     record = updated.decision_record
     return {
         "ok": True,
@@ -304,6 +374,7 @@ async def jira_webhook(
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat_about_risk(payload: ChatRequest, request: Request) -> ChatResponse:
     enforce_rate_limit(request, "chat")
+    require_api_token(request)
     request_id = getattr(request.state, "request_id", new_request_id())
     token = request.headers.get("X-Assessment-Token")
     if not store.token_matches(payload.assessment_id, token):
@@ -315,9 +386,6 @@ async def chat_about_risk(payload: ChatRequest, request: Request) -> ChatRespons
             status_code=404,
             detail=f"No assessment found for assessment_id={payload.assessment_id}",
         )
-    if assessment is None:
-        assessment = store.get_assessment()
-        intake = store.get_intake()
     logger.info(
         "chat request",
         extra={

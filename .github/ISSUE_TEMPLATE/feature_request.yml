@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a focused governance or engineering improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Which user, control, or operational problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Include alternatives and audit/security implications.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Scoring and controls
+        - Evidence and audit
+        - Persistence and tenancy
+        - Authentication and authorization
+        - Jira workflow
+        - User interface
+        - Documentation
+    validations:
+      required: true

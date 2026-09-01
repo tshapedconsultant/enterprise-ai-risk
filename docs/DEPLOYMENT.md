@@ -1,6 +1,8 @@
 ﻿# Deployment
 
-**Status:** Demo / PoC image. Assessments live in an in-memory store (TTL-capped); lost on restart. Do **not** run multiple replicas expecting a shared session.
+**Status:** Demo / PoC image. SQLite persists assessments and workflow state
+when `DATA_STORE` is mounted on durable storage. Keep one replica; this is not
+tenant-isolated production storage.
 
 Container layout: FastAPI (`uvicorn`) serves `/` and `/static/*` from the same image. No nginx sidecar required for a first deploy.
 
@@ -16,8 +18,16 @@ Without Compose:
 
 ```bash
 docker build -t enterprise-ai-risk .
-docker run --rm -p 8000:8000 --env-file .env enterprise-ai-risk
+docker run --rm -p 8000:8000 --env-file .env \
+  -v enterprise-ai-risk-data:/data -e DATA_STORE=/data/app.sqlite \
+  enterprise-ai-risk
 ```
+
+## Share a public URL (no coding for guests)
+
+Localhost is not reachable by other people. Deploy once with [Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk) (`render.yaml` at the repo root), then send the `https://…onrender.com` URL. They only use the browser.
+
+The container listens on `$PORT` (Render, Cloud Run, Railway). Default remains `8000`.
 
 Health check path: `GET /api/v1/health` → `{ "status": "ok" }`. Diagnostics (including `approver_domain` and `webhook_event_store`) are on `GET /api/v1/health/details`.
 
@@ -33,7 +43,8 @@ Pass secrets as environment variables. Never `COPY .env`.
 |----------|-----------------|--------|
 | `JIRA_APPROVER_DOMAIN` | **Yes (startup)** | Valid email domain (contains `.`, no `@`). Process exits if missing or malformed. |
 | `JIRA_WEBHOOK_SECRET` | **Yes (startup)** | Process exits if empty. Webhook POSTs also return **503** if it is cleared later. |
-| `WEBHOOK_EVENT_STORE` | Recommended | SQLite file for Jira event IDs. Unset or `:memory:` is process-local. |
+| `DATA_STORE` | Recommended | SQLite file for assessments, access tokens, Jira issue maps, and webhook IDs. Default `data/app.sqlite`; mount it durably. |
+| `API_ACCESS_TOKEN` | For networked demos | Bearer or `X-API-Token` gate for assess/chat. It is not SSO or RBAC. |
 | `OPENAI_API_KEY` | No | Chat LLM only |
 | `JIRA_BASE_URL` / `JIRA_API_TOKEN` | No | Dry-run tickets if unset |
 | `REQUIRE_ASSESSMENT_AUTH` | Defaults **on** | Set `false` only for local demos. Console already sends `X-Assessment-Token`. |
@@ -43,12 +54,13 @@ Pass secrets as environment variables. Never `COPY .env`.
 
 | Constraint | Implication |
 |------------|-------------|
-| `store.py` assessments are process RAM | Restart or a second replica loses / splits assessments |
-| Webhook event IDs can be SQLite (`WEBHOOK_EVENT_STORE`) | Shared file/volume stops duplicate Jira events across workers; assessments still need PostgreSQL |
-| Webhooks still bind to in-memory sessions | Sticky sessions do not fully fix this; use one replica until PostgreSQL (roadmap A) |
+| `DATA_STORE` is a local SQLite file | Restart-safe on a durable volume; do not share a local volume across autoscaled replicas |
+| Assessment and Jira mappings share one database | Webhooks resolve explicit UUIDs or persisted `issue.key`; no process-global latest row |
+| No `tenant_id`, RLS, or append-only decisions | A process token is not production multi-tenancy or authorization |
 | No built-in TLS | Terminate TLS at the load balancer / Cloud Run / ingress |
 
-**Rule:** `replicas: 1` (or Cloud Run `max-instances=1`) until the durable PostgreSQL store exists (see [FUTURE_IMPROVEMENTS.md](FUTURE_IMPROVEMENTS.md) item 5). Do not ship production on the in-memory store.
+**Rule:** keep `replicas: 1` until PostgreSQL tenant isolation exists. SQLite
+solves restart loss, not horizontal scaling or an immutable audit ledger.
 
 ## Google Cloud Run
 
@@ -60,11 +72,14 @@ gcloud run deploy enterprise-ai-risk \
   --max-instances 1 \
   --cpu 1 \
   --memory 512Mi \
-  --set-env-vars "JIRA_APPROVER_DOMAIN=adevinta.com,WEBHOOK_EVENT_STORE=/tmp/webhook-events.sqlite" \
-  --set-secrets "JIRA_WEBHOOK_SECRET=jira-webhook-secret:latest"
+  --set-env-vars "JIRA_APPROVER_DOMAIN=example.com,DATA_STORE=/tmp/app.sqlite" \
+  --set-secrets "JIRA_WEBHOOK_SECRET=jira-webhook-secret:latest,API_ACCESS_TOKEN=console-api-token:latest"
 ```
 
-`--allow-unauthenticated` matches today’s lack of SSO. For an internal tool, put Cloud Run behind IAP or `--no-allow-unauthenticated` plus a load balancer.
+Cloud Run's writable filesystem is ephemeral, so `/tmp/app.sqlite` does not
+survive instance replacement. Use Cloud SQL/PostgreSQL for a durable Cloud Run
+deployment. `--allow-unauthenticated` only makes sense with
+`API_ACCESS_TOKEN`; for an internal tool, prefer IAP or authenticated ingress.
 
 Map a custom domain and force HTTPS at Cloud Run. Point Jira automation at `https://<service>/api/v1/webhooks/jira`.
 

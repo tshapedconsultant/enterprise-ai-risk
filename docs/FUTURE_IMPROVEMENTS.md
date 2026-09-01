@@ -3,10 +3,11 @@
 **Date:** 2026-08-14  
 **Scope:** What is intentionally not in this Demo / PoC, and why  
 **Current product:** DPIA object, EvidenceItem, deterministic engine, DecisionRecord, Jira gates, `evidence_pack` JSON  
-**Out of scope here:** Durable session store (item 5) and PDF export of the pack
+**Out of scope here:** Tenant-grade PostgreSQL/immutable audit store and PDF export
 
-Companion Word file: generate with `python docs/build_future_improvements.py`.  
-**v2 (persistence, DPIA Workspace, evidence repository):** [V2_IMPROVEMENTS.md](V2_IMPROVEMENTS.md) — Word: `python docs/build_v2_improvements.py`.
+Markdown is canonical. Optional Word export:
+`python scripts/export_docx.py docs/FUTURE_IMPROVEMENTS.md --out-dir artifacts/docs`.
+See also [V2 improvements](V2_IMPROVEMENTS.md).
 
 This document does **not** authorize skipping the deterministic engine or returning decisions to the LLM. Preserve: Evidence → Control assessment → Risk factors → Deterministic scoring → Governance triage → Human Jira gates.
 
@@ -18,15 +19,17 @@ This document does **not** authorize skipping the deterministic engine or return
 | 2 | EvidenceItem separate from Findings | Yes. Finding ≠ proof. | Done (`evidence_items`) |
 | 3 | LLM must not set risk/decision | Yes. Without this it is a compliance chatbot. | Done (`app/scoring.py`) |
 | 4 | DecisionRecord / audit trail | Yes. Enterprise audit and sales. | Done + Jira human gates (v1.5) |
-| 5 | Replace in-memory store | Yes for production. Not for demo. | Deferred — see §2. Auth tokens and `TRUSTED_PROXIES` are in this release. |
+| 5 | Replace in-memory store | Yes. | SQLite persistence done; PostgreSQL tenancy + immutable decisions remain. |
 
-The evidence pack (assessment, matrix, GDPR/DPIA, AI Act, NIST, ISO, findings, remediation, Jira, audit trail) is already generated as JSON (`evidence_pack`). Missing: immutable PDF and durable storage.
+The evidence pack is generated as JSON. SQLite now persists it across restart.
+Missing: immutable PDF, per-tenant authorization, and an append-only audit log.
 
 ## 2. Item 5 — session store (production)
 
-Today `app/store.py` holds **assessments** in process memory (TTL-capped). Fine for demo and interviews. Not fine for multiple workers, restarts, multiple tenants, or audits asking who decided what on Tuesday.
-
-Webhook **event IDs** can already persist in SQLite when `WEBHOOK_EVENT_STORE` is a file path. That stops the same Jira webhook from being applied twice across workers that share the file. It does **not** share assessments. Production still needs PostgreSQL for sessions (this item).
+Today `app/store.py` persists assessments, access tokens, workflow updates, Jira
+issue mappings, and webhook IDs in SQLite (`DATA_STORE`). Restart recovery and
+explicit assessment isolation are implemented. SQLite is still not the target
+for horizontally scaled, multi-tenant production.
 
 ### Target design
 
@@ -49,8 +52,9 @@ Webhook **event IDs** can already persist in SQLite when `WEBHOOK_EVENT_STORE` i
 
 ### Acceptance criteria
 
-- Restarting uvicorn does not erase assessments.
-- Two workers serve the same `assessment_id`.
+- Restarting uvicorn does not erase assessments when `DATA_STORE` is durable. **Done.**
+- Webhooks resolve `issue.key` without a global latest assessment. **Done.**
+- Two workers serve the same `assessment_id` through PostgreSQL.
 - Direct UPDATE on DecisionRecord in DB must fail or emit a tamper event.
 - Export pack with SHA-256 hash and engine version (`deterministic-rules-v1`, v2, …).
 

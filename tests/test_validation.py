@@ -173,7 +173,7 @@ def test_latest_isolates_webhook_to_named_assessment(client):
     assert a.status_code == 200 and b.status_code == 200
     id_a = a.json()["assessment_metadata"]["assessment_id"]
     id_b = b.json()["assessment_metadata"]["assessment_id"]
-    from tests.conftest import LEGAL_APPROVER, jira_issue_updated, post_jira_webhook
+    from tests.conftest import LEGAL_APPROVER, fetch_assessment, jira_issue_updated, post_jira_webhook
 
     closed = post_jira_webhook(
         client,
@@ -181,7 +181,7 @@ def test_latest_isolates_webhook_to_named_assessment(client):
         "evt-iso-a",
     )
     assert closed.status_code == 200
-    latest = client.get("/api/v1/assessment/latest")
+    latest = fetch_assessment(client, id_b)
     assert latest.status_code == 200
     assert latest.json()["assessment"]["assessment_metadata"]["vendor"] == "VendorB"
     assert latest.json()["assessment"]["decision_record"]["legal_approver"] is None
@@ -206,7 +206,10 @@ def test_assessment_token_required_when_enabled(client, sample_intake, monkeypat
     token = assess.headers["X-Assessment-Token"]
     assessment_id = assess.json()["assessment_metadata"]["assessment_id"]
     monkeypatch.setenv("REQUIRE_ASSESSMENT_AUTH", "true")
-    denied = client.get("/api/v1/assessment/latest")
+    denied = client.get(
+        "/api/v1/assessment/latest",
+        headers={"X-Assessment-Id": assessment_id},
+    )
     assert denied.status_code == 401
     ok = client.get(
         "/api/v1/assessment/latest",

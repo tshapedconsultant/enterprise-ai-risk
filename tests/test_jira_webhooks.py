@@ -15,6 +15,7 @@ from tests.conftest import (
     SECOPS_APPROVER,
     TEST_APPROVER_DOMAIN,
     WEBHOOK_SECRET,
+    fetch_assessment,
     jira_issue_updated,
     post_jira_webhook,
     signed_webhook,
@@ -170,7 +171,7 @@ def test_webhook_shared_secret_without_hmac_rejected(client, sample_intake):
         },
     )
     assert response.status_code == 401
-    latest = client.get("/api/v1/assessment/latest").json()
+    latest = fetch_assessment(client, assessment_id).json()
     assert latest["assessment"]["decision_record"]["legal_approver"] is None
 
 
@@ -216,7 +217,7 @@ def test_webhook_replay_does_not_double_count(client, sample_intake):
     assert first.status_code == 200
     assert second.status_code == 200
     assert second.json()["duplicate"] is True
-    latest = client.get("/api/v1/assessment/latest").json()
+    latest = fetch_assessment(client, assessment_id).json()
     record = latest["assessment"]["decision_record"]
     assert record["legal_approver"] == LEGAL_APPROVER
     assert record["secops_approver"] is None
@@ -242,7 +243,7 @@ def test_webhook_unknown_id_does_not_consume_event(client, sample_intake):
     retry = post_jira_webhook(client, valid, "evt-retry-after-404")
     assert retry.status_code == 200
     assert retry.json()["duplicate"] is False
-    latest = client.get("/api/v1/assessment/latest").json()
+    latest = fetch_assessment(client, assessment_id).json()
     assert latest["assessment"]["decision_record"]["legal_approver"] == LEGAL_APPROVER
 
 
@@ -271,18 +272,19 @@ def test_webhook_422_does_not_consume_event_id(client, sample_intake):
     )
     assert retry.status_code == 200
     assert retry.json()["duplicate"] is False
-    latest = client.get("/api/v1/assessment/latest").json()
+    latest = fetch_assessment(client, assessment_id).json()
     assert latest["assessment"]["decision_record"]["legal_approver"] == LEGAL_APPROVER
 
 
 def test_webhook_malformed_assessment_id_rejected(client, sample_intake):
     assess = client.post("/api/v1/assess-vendor", json=sample_intake)
     assert assess.status_code == 200
+    assessment_id = assess.json()["assessment_metadata"]["assessment_id"]
     body = jira_issue_updated(email=LEGAL_APPROVER, assessment_id="not-a-uuid")
     response = post_jira_webhook(client, body, "evt-bad-aid")
     assert response.status_code == 400
     assert "UUID" in response.json()["detail"]
-    latest = client.get("/api/v1/assessment/latest").json()
+    latest = fetch_assessment(client, assessment_id).json()
     assert latest["assessment"]["decision_record"]["legal_approver"] is None
 
 
@@ -408,7 +410,7 @@ def test_legal_gate_twice_same_approver_is_idempotent():
 def test_legal_gate_twice_different_approver_rejected():
     assessment = _evaluate_personal()
     assessment = apply_approval(assessment, jira_issue_updated(email=LEGAL_APPROVER, labels=["legal-review"]))
-    assessment.decision_record.legal_approver = "previous-dpo@adevinta.com"
+    assessment.decision_record.legal_approver = "previous-dpo@example.com"
     with pytest.raises(ValueError, match="already closed"):
         apply_approval(
             assessment,
@@ -441,7 +443,7 @@ def test_webhook_assignee_without_actor_rejected(client, sample_intake):
     response = post_jira_webhook(client, body, "evt-assignee-only")
     assert response.status_code == 422
     assert "assignee is not an approver" in response.json()["detail"]
-    latest = client.get("/api/v1/assessment/latest").json()
+    latest = fetch_assessment(client, assessment_id).json()
     assert latest["assessment"]["decision_record"]["legal_approver"] is None
 
 
@@ -458,3 +460,61 @@ def test_webhook_missing_previous_status(client, sample_intake):
     }
     response = post_jira_webhook(client, body, "evt-no-prev")
     assert response.status_code == 422
+
+
+def test_webhook_resolves_assessment_by_jira_issue_key(client, sample_intake):
+    from app import store
+
+    assess = client.post("/api/v1/assess-vendor", json=sample_intake)
+    assert assess.status_code == 200
+    assessment_id = assess.json()["assessment_metadata"]["assessment_id"]
+    store.bind_jira_issue("AIGOV-77", assessment_id)
+    body = jira_issue_updated(
+        key="AIGOV-77",
+        email=LEGAL_APPROVER,
+        labels=["legal-review"],
+        assessment_id=None,
+        changelog_id="chg-by-key",
+    )
+    body.pop("assessment_id", None)
+    body["issue"]["fields"]["description"] = "No id in description"
+    response = post_jira_webhook(client, body, "evt-by-key")
+    assert response.status_code == 200
+    assert response.json()["assessment_id"] == assessment_id
+    assert response.json()["legal_approver"] == LEGAL_APPROVER
+
+
+def test_webhook_never_falls_back_to_only_assessment(client, sample_intake):
+    assess = client.post("/api/v1/assess-vendor", json=sample_intake)
+    assert assess.status_code == 200
+    body = jira_issue_updated(
+        key="AIGOV-UNMAPPED",
+        email=LEGAL_APPROVER,
+        assessment_id=None,
+        changelog_id="chg-no-global-fallback",
+    )
+    body.pop("assessment_id", None)
+    body["issue"]["fields"]["description"] = "No id in description"
+    response = post_jira_webhook(client, body, "evt-no-global-fallback")
+    assert response.status_code == 400
+    assert "assessment_id is required" in response.json()["detail"]
+
+
+def test_webhook_rejects_issue_mapping_assessment_mismatch(client, sample_intake):
+    from app import store
+
+    first = client.post("/api/v1/assess-vendor", json=sample_intake)
+    second_payload = dict(sample_intake, vendor_name="OtherCo")
+    second = client.post("/api/v1/assess-vendor", json=second_payload)
+    first_id = first.json()["assessment_metadata"]["assessment_id"]
+    second_id = second.json()["assessment_metadata"]["assessment_id"]
+    store.bind_jira_issue("AIGOV-88", first_id)
+    body = jira_issue_updated(
+        key="AIGOV-88",
+        email=LEGAL_APPROVER,
+        assessment_id=second_id,
+        changelog_id="chg-map-conflict",
+    )
+    response = post_jira_webhook(client, body, "evt-map-conflict")
+    assert response.status_code == 409
+    assert "another assessment" in response.json()["detail"]

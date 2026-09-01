@@ -33,8 +33,9 @@ With live log output on the console (`log_cli=true` in `pytest.ini`). A full DEB
 | `tests/test_llm.py` | Mock chat plus OpenAI client mocks (timeout, empty choices, redaction, truncation) |
 | `tests/test_validation.py` | Input limits, isolation, token auth, generic 500 |
 | `tests/test_regression.py` | Golden snapshots under `tests/golden/` |
-| `tests/test_api.py` | Health, static index (serves `index.html`), assess-vendor, latest session, chat, validation |
-| `tests/test_store.py` | In-memory session round-trip, webhook update, SQLite event-id persistence |
+| `tests/test_api.py` | Health/config, static console, assess, ID-scoped restore, API/assessment tokens, chat |
+| `tests/test_store.py` | SQLite round-trip/reopen, token retention, workflow update, Jira map, event replay |
+| `tests/test_frameworks.py` | Mandatory GDPR engine plus configurable optional alignment sections |
 | `tests/test_config.py` | Startup `ConfigurationError` for domain, webhook secret, trusted proxies |
 | `tests/test_redaction.py` | Table-driven `redact_secrets` / `redact_mapping` (JSON, query, headers, false positives) |
 | `tests/test_logging.py` | JSON formatter, `configure_logging`, structured `event` fields on assess/webhook paths |
@@ -66,7 +67,7 @@ The script POSTs `/api/v1/assess-vendor`, reads `assessment_id` from the respons
 Equivalent HMAC-signed request (Legal gate only — replace `YOUR_ASSESSMENT_ID` and the signature). `X-Jira-Secret` alone is rejected; use `scripts/simulate_jira_webhook.py` or:
 
 ```bash
-BODY='{"status":"Done","previous_status":"To Do","approver_email":"j.perez@adevinta.com","labels":["legal-review"],"assessment_id":"YOUR_ASSESSMENT_ID"}'
+BODY='{"status":"Done","previous_status":"To Do","approver_email":"j.perez@example.com","labels":["legal-review"],"assessment_id":"YOUR_ASSESSMENT_ID"}'
 SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$JIRA_WEBHOOK_SECRET" | awk '{print $2}')
 curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/jira \
   -H "Content-Type: application/json" \
@@ -77,7 +78,9 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/jira \
   -d "$BODY"
 ```
 
-If no assessment is in memory, expect **404**. If `assessment_id` is missing when multiple assessments exist, expect **400**. If `assessment_id` is not a UUID, expect **400**. If the email is not `@adevinta.com`, expect **422**. If the process started without `JIRA_WEBHOOK_SECRET`, it should not be listening; a secret cleared at runtime still returns **503**.
+If no assessment is persisted, expect **404**. An event can resolve by explicit
+`assessment_id` or persisted Jira `issue.key`; missing/unmapped correlation returns **400**.
+Malformed UUIDs return **400** and unauthorized approvers return **422**.
 
 ## Regression (rule changes vs past cases)
 
@@ -117,7 +120,7 @@ Tests set `LOG_LEVEL=DEBUG` and `LOG_FILE=tests/logs/pytest-app.log` in `tests/c
 |-----|-----|
 | Live Jira REST | Outbound is mocked with `httpx.MockTransport`; no call to Atlassian |
 | Live OpenAI | Chat client is mocked; fallback and redaction (including JSON/query false positives) are covered |
-| Multi-worker store | In-memory singleton by design (ADR-6) |
+| Multi-worker database behavior | SQLite restart is tested; PostgreSQL concurrency/RLS remains future work |
 
 ## CI/CD
 

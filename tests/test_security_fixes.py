@@ -6,6 +6,7 @@ import pytest
 
 from app.models import VendorInput
 from app.scoring import looks_like_personal_data, infer_privacy_signals, evaluate
+from tests.conftest import fetch_assessment, signed_webhook
 
 
 def test_email_delivery_is_not_personal_data():
@@ -104,7 +105,7 @@ def test_webhook_requires_secret(client, sample_intake):
         body = {
             "status": "Done",
             "previous_status": "To Do",
-            "approver_email": "dpo@adevinta.com",
+            "approver_email": "dpo@example.com",
             "labels": ["legal-review"],
             "assessment_id": assessment_id,
         }
@@ -142,14 +143,14 @@ def test_concurrent_assessments_do_not_collide(client):
     body = {
         "status": "Done",
         "previous_status": "To Do",
-        "approver_email": "dpo@adevinta.com",
+        "approver_email": "dpo@example.com",
         "labels": ["legal-review"],
         "assessment_id": id_a,
         "issue_type": "Task",
     }
     raw, headers = signed_webhook(body, "evt-a-legal")
     client.post("/api/v1/webhooks/jira", content=raw, headers=headers)
-    latest_b = client.get("/api/v1/assessment/latest").json()
+    latest_b = fetch_assessment(client, id_b).json()
     assert latest_b["assessment"]["assessment_metadata"]["vendor"] == "VendorB"
     assert latest_b["assessment"]["decision_record"]["legal_approver"] is None
 

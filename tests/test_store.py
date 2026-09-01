@@ -1,6 +1,8 @@
-"""In-memory store behaviour."""
+"""SQLite assessment store: round-trip, TTL retention, restart, Jira key map."""
 
 from pathlib import Path
+
+import pytest
 
 from app import store
 from app.enums import WorkflowStatus
@@ -8,45 +10,44 @@ from app.models import VendorInput
 from app.scoring import evaluate
 
 
-def test_store_round_trip():
-    store.clear()
-    assert store.get_assessment() is None
-    assert store.get_intake() is None
-
-    payload = VendorInput(
-        vendor_name="StoreCo",
+def _intake(name: str = "StoreCo") -> VendorInput:
+    return VendorInput(
+        vendor_name=name,
         service_description="API",
         intended_use="test",
         data_processed="none",
         has_dpa=False,
     )
+
+
+def test_store_round_trip():
+    store.clear()
+    payload = _intake()
     assessment = evaluate(payload)
+    aid = assessment.assessment_metadata.assessment_id
     store.save(payload, assessment)
 
-    assert store.get_intake().vendor_name == "StoreCo"
-    assert store.get_assessment().assessment_metadata.vendor == "StoreCo"
+    assert store.get_assessment() is None
+    assert store.get_intake() is None
+    assert store.get_assessment(aid).assessment_metadata.vendor == "StoreCo"
+    assert store.get_intake(aid).vendor_name == "StoreCo"
 
     store.clear()
-    assert store.get_assessment() is None
+    assert store.get_assessment(aid) is None
 
 
 def test_save_assessment_preserves_intake():
     store.clear()
-    payload = VendorInput(
-        vendor_name="KeepIntake",
-        service_description="API",
-        intended_use="test",
-        data_processed="none",
-        has_dpa=False,
-    )
+    payload = _intake("KeepIntake")
     assessment = evaluate(payload)
+    aid = assessment.assessment_metadata.assessment_id
     store.save(payload, assessment)
 
     assessment.decision_record.workflow_status = WorkflowStatus.SUPERSEDED
     store.save_assessment(assessment)
 
-    assert store.get_intake().vendor_name == "KeepIntake"
-    assert store.get_assessment().decision_record.workflow_status == WorkflowStatus.SUPERSEDED
+    assert store.get_intake(aid).vendor_name == "KeepIntake"
+    assert store.get_assessment(aid).decision_record.workflow_status == WorkflowStatus.SUPERSEDED
 
 
 def test_assessment_auth_defaults_on(monkeypatch):
@@ -58,20 +59,81 @@ def test_assessment_auth_defaults_on(monkeypatch):
     assert store.token_matches(None, None) is True
 
 
+def test_assessments_survive_store_reopen(tmp_path, monkeypatch):
+    path = tmp_path / "app.sqlite"
+    monkeypatch.setenv("DATA_STORE", str(path))
+    monkeypatch.setenv("REQUIRE_ASSESSMENT_AUTH", "true")
+    store.close_store()
+    try:
+        store.init_store()
+        store.clear()
+        payload = _intake("DurableCo")
+        assessment = evaluate(payload)
+        aid = assessment.assessment_metadata.assessment_id
+        token = store.save(payload, assessment)
+        store.bind_jira_issue("AIGOV-99", aid)
+        store.close_store()
+        assert store.init_store() == "sqlite"
+        restored = store.get_assessment(aid)
+        assert restored is not None
+        assert restored.assessment_metadata.vendor == "DurableCo"
+        assert store.token_matches(aid, token) is True
+        assert store.token_matches(aid, "wrong") is False
+        assert store.resolve_jira_issue("AIGOV-99") == aid
+    finally:
+        store.close_store()
+        monkeypatch.setenv(
+            "DATA_STORE",
+            str(Path(__file__).resolve().parent / "logs" / "app.sqlite"),
+        )
+        store.init_store()
+
+
 def test_webhook_events_shared_via_sqlite_file(tmp_path, monkeypatch):
     path = tmp_path / "events.sqlite"
-    monkeypatch.setenv("WEBHOOK_EVENT_STORE", str(path))
-    store.close_event_store()
+    monkeypatch.setenv("DATA_STORE", str(path))
+    store.close_store()
     try:
-        assert store.init_event_store() == "sqlite"
+        assert store.init_store() == "sqlite"
         assert store.remember_event("evt-shared") is True
-        store.close_event_store()
-        assert store.init_event_store() == "sqlite"
+        store.close_store()
+        assert store.init_store() == "sqlite"
         assert store.remember_event("evt-shared") is False
     finally:
-        store.close_event_store()
+        store.close_store()
         monkeypatch.setenv(
-            "WEBHOOK_EVENT_STORE",
-            str(Path(__file__).resolve().parent / "logs" / "webhook-events.sqlite"),
+            "DATA_STORE",
+            str(Path(__file__).resolve().parent / "logs" / "app.sqlite"),
         )
-        store.init_event_store()
+        store.init_store()
+
+
+def test_jira_issue_map_does_not_use_global_latest():
+    store.clear()
+    first = evaluate(_intake("One"))
+    second = evaluate(_intake("Two"))
+    store.save(_intake("One"), first)
+    store.save(_intake("Two"), second)
+    store.bind_jira_issue("AIGOV-1", first.assessment_metadata.assessment_id)
+    assert store.resolve_jira_issue("AIGOV-1") == first.assessment_metadata.assessment_id
+    with pytest.raises(ValueError, match="already bound"):
+        store.bind_jira_issue("AIGOV-1", second.assessment_metadata.assessment_id)
+
+
+def test_atomic_assessment_updater_preserves_token(monkeypatch):
+    store.clear()
+    monkeypatch.setenv("REQUIRE_ASSESSMENT_AUTH", "true")
+    payload = _intake("AtomicCo")
+    assessment = evaluate(payload)
+    aid = assessment.assessment_metadata.assessment_id
+    token = store.save(payload, assessment)
+
+    def supersede(current):
+        current.decision_record.workflow_status = WorkflowStatus.SUPERSEDED
+        return current
+
+    updated = store.update_assessment(aid, supersede)
+    assert updated.decision_record.workflow_status == WorkflowStatus.SUPERSEDED
+    assert store.get_assessment(aid).decision_record.workflow_status == WorkflowStatus.SUPERSEDED
+    assert store.token_matches(aid, token) is True
+    assert store.token_matches(aid, "wrong") is False
