@@ -23,6 +23,9 @@ docker run --rm -p 8000:8000 --env-file .env \
   enterprise-ai-risk
 ```
 
+Named volumes keep `DATA_STORE` after `docker rm`: Compose declares `app-data`;
+the `docker run` example above uses `enterprise-ai-risk-data`.
+
 ## Share a public URL (no coding for guests)
 
 Localhost is not reachable by other people. Deploy once with [Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk) (`render.yaml` at the repo root), then send the `https://…onrender.com` URL. They only use the browser.

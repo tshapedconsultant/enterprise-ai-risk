@@ -5,6 +5,14 @@ semantic versioning for releases. The FastAPI `version` field is `1.4.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- Docs hygiene after v1.4.0: README engine badge `v1.4` (YAML profiles),
+  deprecated `GET /api/v1/assessment/latest` points at
+  `/api/v1/assessments/{id}`, named-volume note for `DATA_STORE` after
+  `docker rm`, and a pointer to Cloud Run / ECS / Kubernetes in
+  [DEPLOYMENT.md](docs/DEPLOYMENT.md). No engine or API behaviour change.
+
 ## [1.4.0] - 2026-09-01
 
 ### Added

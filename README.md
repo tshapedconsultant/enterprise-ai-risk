@@ -3,7 +3,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Status](https://img.shields.io/badge/status-Demo%20%2F%20PoC-orange)](docs/ARCHITECTURE_DECISIONS.md)
-[![Engine](https://img.shields.io/badge/scoring-deterministic--rules--v1-1B2118)](docs/ARCHITECTURE.md)
+[![Engine](https://img.shields.io/badge/scoring-deterministic--yaml--profiles--v1.4-1B2118)](docs/ARCHITECTURE.md)
 
 FastAPI service and single-page console for **third-party AI vendor governance**. This is an **Enterprise AI Governance & Risk Control Layer** — not a generic compliance chatbot.
 
@@ -68,6 +68,9 @@ docker run --rm -p 8000:8000 --env-file .env -v enterprise-ai-risk-data:/data \
   -e DATA_STORE=/data/app.sqlite enterprise-ai-risk
 ```
 
+Named volumes keep `DATA_STORE` (`/data/app.sqlite`) after `docker rm`: Compose
+uses `app-data`; the `docker run` example uses `enterprise-ai-risk-data`.
+
 The console is still a **Demo / PoC**: SQLite is restart-safe with a
 hash-chained audit ledger. External root-hash anchors (Jira dry-run by default;
 optional Rekor or S3 Object Lock) are the WORM/attester path. Jira dry-run is
@@ -91,7 +94,7 @@ Jira department Task closed → POST /webhooks/jira
     → DEPARTMENT_GATES_COMPLETED when all gates close (not a business APPROVE)
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHITECTURE_DECISIONS.md](docs/ARCHITECTURE_DECISIONS.md) (why, trade-offs, limitations), and [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHITECTURE_DECISIONS.md](docs/ARCHITECTURE_DECISIONS.md) (why, trade-offs, limitations), and [docs/USER_GUIDE.md](docs/USER_GUIDE.md). Cloud Run, ECS, and Kubernetes sketches are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## API
 
@@ -103,7 +106,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHIT
 | `GET` | `/api/v1/config` | Non-secret UI flags and enabled frameworks |
 | `GET` | `/api/v1/assessments/{assessment_id}` | Restore one assessment by UUID + token |
 | `GET` | `/api/v1/assessments/{assessment_id}/audit` | Verify the hash chain and external root-hash anchors |
-| `GET` | `/api/v1/assessment/latest` | **Deprecated.** Requires `X-Assessment-Id`; never returns a global latest row |
+| `GET` | `/api/v1/assessment/latest` | **Deprecated.** Use `GET /api/v1/assessments/{assessment_id}`. Requires `X-Assessment-Id`; never returns a global latest row |
 | `POST` | `/api/v1/assess-vendor` | Run triage; return full governance JSON |
 | `POST` | `/api/v1/chat` | Q&A for one `assessment_id` (required with default assessment auth) |
 | `POST` | `/api/v1/webhooks/jira` | Inbound human approval from Jira |
