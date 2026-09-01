@@ -48,7 +48,7 @@ jobs:
           python scripts/export_evidence_pack.py \
             --intake tests/golden/personal_no_dpa.intake.json \
             --out-dir artifacts
-          sha256sum -c artifacts/evidence-pack.sha256
+          (cd artifacts && sha256sum -c evidence-pack.sha256)
       - name: Upload evidence pack
         uses: actions/upload-artifact@v4
         with:
@@ -75,7 +75,7 @@ jobs:
           path: artifacts
       - name: Verify pack integrity
         run: |
-          sha256sum -c artifacts/evidence-pack.sha256
+          (cd artifacts && sha256sum -c evidence-pack.sha256)
           python - <<'PY'
           import json
 
