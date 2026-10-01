@@ -19,7 +19,7 @@ FastAPI service and single-page console for **third-party AI vendor governance**
 
 Guests use a browser. They do not install Python or Git.
 
-The instance is a Demo / PoC on Render Starter with a persistent disk, so assessments and saved emails survive a restart. There is no SSO/RBAC or tenant isolation. The console asks for an email before an assessment. That address is stored in `demo_leads` on the SQLite file and is not published. Operators can still use `API_ACCESS_TOKEN` from the Render dashboard. Chat stays on the mock assistant unless `OPENAI_API_KEY` is set.
+The instance is a Demo / PoC on Render Starter with a persistent disk, so assessments and saved emails survive a restart. There is no SSO/RBAC or tenant isolation. The console asks for an email before an assessment. That address is stored in `demo_leads` on the SQLite file and is not published. Operators can still use `API_ACCESS_TOKEN` from the Render dashboard. Chat calls OpenAI only when `OPENAI_API_KEY` is set on the service (Render asks for it; the value stays out of the repo). The model is `gpt-4o-mini`. Scoring never uses that key.
 
 To recreate the service, open **[Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk)** and apply `render.yaml`. The blueprint uses Starter because persistent disks are not on the free plan.
 

@@ -28,3 +28,8 @@ services:
         value: "180"
       - key: DEMO_EMAIL_GATE
         value: "true"
+      # Paste the key in the Render dashboard. Do not commit it.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
