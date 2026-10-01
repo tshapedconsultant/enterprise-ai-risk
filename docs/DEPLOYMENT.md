@@ -28,7 +28,9 @@ the `docker run` example above uses `enterprise-ai-risk-data`.
 
 ## Share a public URL (no coding for guests)
 
-Localhost is not reachable by other people. Deploy once with [Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk) (`render.yaml` at the repo root), then send the `https://…onrender.com` URL. They only use the browser.
+The running console is [https://enterprise-ai-risk.onrender.com](https://enterprise-ai-risk.onrender.com).
+
+Localhost is not reachable by other people. The blueprint is [Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk) (`render.yaml` at the repo root). Guests only use the browser. With `DEMO_EMAIL_GATE=true`, the console stores the email in `demo_leads` and returns a token for that browser.
 
 The container listens on `$PORT` (Render, Cloud Run, Railway). Default remains `8000`.
 
@@ -50,6 +52,7 @@ Pass secrets as environment variables. Never `COPY .env`.
 | `DATA_STORE` | Recommended | SQLite file for assessments, hash-chained audit events, local anchor copies, access-token digests, Jira maps, and webhook IDs. Default `data/app.sqlite`; mount it durably. |
 | `AUDIT_ANCHOR_SINKS` | No | Comma-separated `jira`, `rekor`, `s3`. Default `jira` (dry-run hash copy). Rekor/S3 stay off until configured. |
 | `API_ACCESS_TOKEN` | For networked demos | Shared bearer or `X-API-Token` gate for assess/chat. It is not identity, OIDC/AD/SSO, roles, tenant ownership, or authorization. |
+| `DEMO_EMAIL_GATE` | Public demo | When `true`, `POST /api/v1/demo-access` stores the email in `demo_leads` and returns a console token. Assess and chat then require that token or `API_ACCESS_TOKEN`. |
 | `OPENAI_API_KEY` | No | Chat LLM only |
 | `JIRA_BASE_URL` / `JIRA_API_TOKEN` | No | Dry-run tickets if unset |
 | `REQUIRE_ASSESSMENT_AUTH` | Defaults **on** | Set `false` only for local demos. Console already sends `X-Assessment-Token`. |

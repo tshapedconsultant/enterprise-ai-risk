@@ -306,14 +306,24 @@ def tokens_match(provided: Optional[str], expected: str) -> bool:
 
 def require_api_token(request: Request) -> None:
     """
-    Gate mutating console APIs when API_ACCESS_TOKEN is set.
+    Gate mutating console APIs when API_ACCESS_TOKEN or the demo email gate is set.
 
-    Unset token = open assess-vendor (local demo). Set it for any networked deploy.
+    Unset token and gate = open assess-vendor (local demo). Set a token for any
+    networked deploy. DEMO_EMAIL_GATE accepts a token issued after the email is stored.
     """
-    expected = get_settings().api_access_token
-    if not expected:
+    settings = get_settings()
+    if not settings.api_auth_required:
         return
     provided = request.headers.get("X-API-Token") or _header_bearer(request)
-    if not tokens_match(provided, expected):
-        logger.warning("api token rejected", extra={"event": "api.auth.denied"})
-        raise HTTPException(status_code=401, detail="API token required")
+    if settings.api_access_token and tokens_match(provided, settings.api_access_token):
+        return
+    if settings.demo_email_gate and _demo_access_token_valid(provided):
+        return
+    logger.warning("api token rejected", extra={"event": "api.auth.denied"})
+    raise HTTPException(status_code=401, detail="API token required")
+
+
+def _demo_access_token_valid(provided: Optional[str]) -> bool:
+    from app import store
+
+    return store.demo_access_token_valid(provided)

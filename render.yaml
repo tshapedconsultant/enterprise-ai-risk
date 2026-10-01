@@ -26,3 +26,5 @@ services:
         value: gdpr,eu_ai_act,iso_42001,nist_ai_rmf
       - key: API_RATE_LIMIT_PER_MINUTE
         value: "180"
+      - key: DEMO_EMAIL_GATE
+        value: "true"

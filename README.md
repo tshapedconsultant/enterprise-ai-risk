@@ -13,17 +13,15 @@ FastAPI service and single-page console for **third-party AI vendor governance**
 - **Audit trail:** `DecisionRecord` captures rules, approvers, and workflow status.
 - **Readable console:** tabbed report, audit chips, expandable rows, structured assistant card (vanilla `static/` — no SPA build).
 
-## Share a demo link (no coding for guests)
+## Live demo
 
-You cannot share `http://127.0.0.1:8000` — that only works on your PC. Host the console once, then send people an **https://** URL. They open it in a browser and use the form. They do not install Python or Git.
+**[Open the console](https://enterprise-ai-risk.onrender.com)**
 
-1. Open **[Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk)** (Render account and GitHub login). The blueprint uses a paid Starter instance because persistent disks are not available on the free plan.
-2. Click **Apply**. Wait until the service is live (a few minutes).
-3. Copy the URL Render shows (looks like `https://enterprise-ai-risk.onrender.com`) and send that.
+Guests use a browser. They do not install Python or Git.
 
-The blueprint uses a paid Starter instance (persistent disk), not the free web plan, so it should not spin down the way Render's free services do. Assessments use SQLite and survive an application restart when `DATA_STORE` is on persistent storage. This remains a Demo / PoC rather than a production tenant: there is no SSO/RBAC or tenant database isolation. Set `API_ACCESS_TOKEN` for any networked demo. The generated `API_ACCESS_TOKEN` is shown once in the Render dashboard; guests need that token if the console prompts for it.
+The instance is a Demo / PoC on Render Starter with a persistent disk, so assessments and saved emails survive a restart. There is no SSO/RBAC or tenant isolation. The console asks for an email before an assessment. That address is stored in `demo_leads` on the SQLite file and is not published. Operators can still use `API_ACCESS_TOKEN` from the Render dashboard. Chat stays on the mock assistant unless `OPENAI_API_KEY` is set.
 
-Chat stays on the mock assistant unless you add `OPENAI_API_KEY` in Render → Environment.
+To recreate the service, open **[Deploy to Render](https://render.com/deploy?repo=https://github.com/tshapedconsultant/enterprise-ai-risk)** and apply `render.yaml`. The blueprint uses Starter because persistent disks are not on the free plan.
 
 ## Quick start
 
@@ -107,6 +105,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built), [docs/ARCHIT
 | `GET` | `/api/v1/assessments/{assessment_id}` | Restore one assessment by UUID + token |
 | `GET` | `/api/v1/assessments/{assessment_id}/audit` | Verify the hash chain and external root-hash anchors |
 | `GET` | `/api/v1/assessment/latest` | **Deprecated.** Use `GET /api/v1/assessments/{assessment_id}`. Requires `X-Assessment-Id`; never returns a global latest row |
+| `POST` | `/api/v1/demo-access` | Store one demo email and return a console token (`DEMO_EMAIL_GATE`) |
 | `POST` | `/api/v1/assess-vendor` | Run triage; return full governance JSON |
 | `POST` | `/api/v1/chat` | Q&A for one `assessment_id` (required with default assessment auth) |
 | `POST` | `/api/v1/webhooks/jira` | Inbound human approval from Jira |
@@ -153,6 +152,7 @@ Repeat for `infosec` and `ai-governance-review`. Non-`@example.com` emails are r
 | `DATA_STORE` | SQLite path for assessments, hash-chained audit events, local `audit_anchors` copies, tokens, Jira mappings, and webhook replay IDs (default `data/app.sqlite`) |
 | `AUDIT_ANCHOR_SINKS` | Comma-separated `jira`, `rekor`, `s3` (default `jira`). Jira dry-run embeds the root hash without credentials; Rekor/S3 stay off until configured |
 | `API_ACCESS_TOKEN` | Shared deployment-wide bearer / `X-API-Token` gate; not identity, OIDC/AD/SSO, roles, tenant ownership, or authorization |
+| `DEMO_EMAIL_GATE` | When true, the console asks for an email before assess/chat. The address is stored in `demo_leads` on `DATA_STORE` |
 | `REQUIRE_ASSESSMENT_AUTH` | Per-assessment token protection (default `true`). Restore, audit, and chat need `assessment_id` plus `X-Assessment-Token` |
 | `HEALTH_DETAILS_TOKEN` | Optional; when set, `GET /api/v1/health/details` requires `X-Health-Token` |
 | `COMPLIANCE_FRAMEWORKS` | GDPR decision profile plus alignment-only EU AI Act, ISO 42001, and NIST AI RMF metadata |

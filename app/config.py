@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     api_rate_limit_per_minute: int = 60
     trusted_proxies: str = ""
     health_details_token: str = ""
+    demo_email_gate: bool = False
 
     audit_anchor_sinks: str = "jira"
     rekor_url: str = ""
@@ -216,7 +217,7 @@ class Settings(BaseSettings):
 
     @property
     def api_auth_required(self) -> bool:
-        return bool(self.api_access_token)
+        return bool(self.api_access_token) or self.demo_email_gate
 
     def trusted_proxy_networks(self):
         from app.netutil import parse_trusted_proxy_networks
@@ -314,7 +315,7 @@ def validate_startup() -> dict[str, Any]:
             "DATA_STORE is :memory:; assessments and webhook replay protection are process-local",
             extra={"event": "config.data_store.memory"},
         )
-    if not settings.api_access_token:
+    if not settings.api_access_token and not settings.demo_email_gate:
         logger.warning(
             "API_ACCESS_TOKEN is unset; POST /assess-vendor is open to anyone who can reach the process",
             extra={"event": "config.api_token.missing"},

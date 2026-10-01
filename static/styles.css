@@ -763,3 +763,43 @@ button:disabled {
     transition: none !important;
   }
 }
+
+.demo-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(10, 12, 8, 0.84);
+}
+
+.demo-gate[hidden] {
+  display: none !important;
+}
+
+.demo-gate-card {
+  width: min(420px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+
+.demo-gate-card h2 {
+  margin: 8px 0 12px;
+  font-size: 1.45rem;
+  letter-spacing: -0.03em;
+}
+
+.demo-gate-card button {
+  margin-top: 8px;
+}
+
+.demo-gate-error {
+  min-height: 1.2em;
+  margin: 12px 0 0;
+  color: var(--danger);
+  font-size: 0.88rem;
+}

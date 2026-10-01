@@ -9,6 +9,7 @@ Endpoints:
   GET  /api/v1/assessments/{id}       Restore one assessment by UUID
   GET  /api/v1/assessments/{id}/audit Hash-chained audit export + verify
   GET  /api/v1/assessment/latest      Deprecated; requires X-Assessment-Id
+  POST /api/v1/demo-access            Store a demo email and issue a console token
   POST /api/v1/assess-vendor          Deterministic triage + Jira ticket payloads
   POST /api/v1/webhooks/jira          Inbound human approvals from Jira
   POST /api/v1/chat                   Follow-up Q&A on a specific assessment
@@ -44,7 +45,7 @@ from app.jira_workflow import (
 from app.frameworks import framework_status, stamp_assessment
 from app.llm import answer_question, llm_enabled, run_assessment
 from app.logging_config import configure_logging, get_logger
-from app.models import AssessmentResponse, ChatRequest, ChatResponse, VendorInput
+from app.models import AssessmentResponse, ChatRequest, ChatResponse, DemoAccessRequest, VendorInput
 from app.security import (
     enforce_rate_limit,
     event_id_from,
@@ -134,6 +135,7 @@ async def health_details(
         "api_auth_required": settings.api_auth_required,
         "audit_anchor_sinks": settings.parsed_audit_anchor_sinks(),
         "frameworks": framework_status(),
+        "demo_email_gate": settings.demo_email_gate,
     }
     return payload
 
@@ -151,6 +153,7 @@ async def public_config() -> dict:
         "data_store": store.store_mode(),
         "audit_anchor_sinks": settings.parsed_audit_anchor_sinks(),
         "frameworks": framework_status(),
+        "demo_email_gate": settings.demo_email_gate,
     }
 
 
@@ -212,6 +215,22 @@ async def latest_assessment(
     if not assessment_id:
         return {"assessment": None, "intake": None, "llm_enabled": llm_enabled()}
     return _assessment_payload(assessment_id, x_assessment_token)
+
+
+@app.post("/api/v1/demo-access")
+async def demo_access(payload: DemoAccessRequest, request: Request) -> dict:
+    """Save one email and return a token that opens the console. No lead list."""
+    settings = get_settings()
+    if not settings.demo_email_gate:
+        raise HTTPException(status_code=404, detail="Not found")
+    enforce_rate_limit(request, "demo-access")
+    try:
+        email = store.normalize_demo_email(payload.email)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Enter a valid email address") from None
+    token = store.grant_demo_access(email)
+    logger.info("demo access granted", extra={"event": "demo.access.granted"})
+    return {"ok": True, "access_token": token}
 
 
 @app.post("/api/v1/assess-vendor")

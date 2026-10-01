@@ -291,6 +291,12 @@ class AssessmentResponse(BaseModel):
     risk_factors: List[str] = Field(default_factory=list)
 
 
+class DemoAccessRequest(BaseModel):
+    """Email exchanged for a demo console token. The address is stored in SQLite."""
+
+    email: str = Field(..., min_length=3, max_length=254)
+
+
 # ---------------------------------------------------------------------------
 # Chat — follow-up Q&A about the current assessment
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ os.environ["JIRA_WEBHOOK_SECRET"] = "test-webhook-secret"
 os.environ["JIRA_APPROVER_DOMAIN"] = "example.com"
 os.environ["REQUIRE_ASSESSMENT_AUTH"] = "false"
 os.environ["API_ACCESS_TOKEN"] = ""
+os.environ["DEMO_EMAIL_GATE"] = "false"
 os.environ["DATA_STORE"] = str(Path(__file__).resolve().parent / "logs" / "app.sqlite")
 os.environ["WEBHOOK_EVENT_STORE"] = ""
 os.environ["HEALTH_DETAILS_TOKEN"] = ""

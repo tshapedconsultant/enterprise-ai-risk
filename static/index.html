@@ -246,6 +246,22 @@
         </section>
       </main>
     </div>
+    <div id="demo-gate" class="demo-gate" hidden>
+      <form id="demo-gate-form" class="demo-gate-card">
+        <p class="eyebrow">Live demo</p>
+        <h2>Open the console</h2>
+        <p class="lede">
+          Enter your email to use the assessment demo. It is saved in this
+          deployment's database. There is no password and no mailing list.
+        </p>
+        <label>
+          <span class="field-label">Email</span>
+          <input type="email" name="email" required autocomplete="email" maxlength="254" placeholder="you@company.com" />
+        </label>
+        <button type="submit" id="demo-gate-btn">Continue</button>
+        <p id="demo-gate-error" class="demo-gate-error" role="alert"></p>
+      </form>
+    </div>
     <script src="/static/app.js"></script>
   </body>
 </html>

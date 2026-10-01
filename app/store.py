@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -32,6 +33,8 @@ from app.models import AssessmentResponse, VendorInput
 from app.timeutil import utc_now_iso
 
 logger = get_logger("app.store")
+
+_DEMO_EMAIL_RE = re.compile(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$")
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -125,6 +128,13 @@ def _init_locked() -> str:
     _conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_audit_anchors_assessment "
         "ON audit_anchors(assessment_id, seq, id)"
+    )
+    _conn.execute(
+        "CREATE TABLE IF NOT EXISTS demo_leads ("
+        "email TEXT PRIMARY KEY NOT NULL, "
+        "created_at TEXT NOT NULL, "
+        "last_seen_at TEXT NOT NULL, "
+        "access_token_hash TEXT NOT NULL)"
     )
     _conn.commit()
     return _store_mode
@@ -876,6 +886,72 @@ def count() -> int:
         return int(_conn.execute("SELECT COUNT(*) FROM assessments").fetchone()[0])
 
 
+def normalize_demo_email(raw: str) -> str:
+    """Lowercase a single mailbox address. Rejects anything that is not one email."""
+    email = (raw or "").strip().lower()
+    if len(email) > 254 or not _DEMO_EMAIL_RE.fullmatch(email):
+        raise ValueError("invalid email")
+    return email
+
+
+def grant_demo_access(email: str) -> str:
+    """
+    Store the email and return a new bearer token.
+
+    The database keeps a SHA-256 digest of the token, not the token itself.
+    A repeat visit updates last_seen_at and replaces the previous token.
+    """
+    normalized = normalize_demo_email(email)
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = utc_now_iso()
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        _conn.execute(
+            "INSERT INTO demo_leads (email, created_at, last_seen_at, access_token_hash) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET "
+            "last_seen_at = excluded.last_seen_at, "
+            "access_token_hash = excluded.access_token_hash",
+            (normalized, now, now, digest),
+        )
+        _conn.commit()
+    logger.info("demo lead stored", extra={"event": "store.demo_lead"})
+    return token
+
+
+def demo_access_token_valid(token: Optional[str]) -> bool:
+    """True when the token matches a stored demo-lead digest."""
+    if not token or len(token) > 200:
+        return False
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        row = _conn.execute(
+            "SELECT 1 FROM demo_leads WHERE access_token_hash = ? LIMIT 1",
+            (digest,),
+        ).fetchone()
+    return row is not None
+
+
+def demo_lead_recorded(email: str) -> bool:
+    """True when this mailbox is already in demo_leads. Not exposed over HTTP."""
+    try:
+        normalized = normalize_demo_email(email)
+    except ValueError:
+        return False
+    with _lock:
+        _init_locked()
+        assert _conn is not None
+        row = _conn.execute(
+            "SELECT 1 FROM demo_leads WHERE email = ? LIMIT 1",
+            (normalized,),
+        ).fetchone()
+    return row is not None
+
+
 def clear() -> None:
     """Drop all session state. Used by tests; not exposed as an API."""
     with _lock:
@@ -887,5 +963,6 @@ def clear() -> None:
         _conn.execute("DELETE FROM audit_heads")
         _conn.execute("DELETE FROM assessments")
         _conn.execute("DELETE FROM webhook_events")
+        _conn.execute("DELETE FROM demo_leads")
         _conn.commit()
     logger.debug("session cleared", extra={"event": "store.clear"})

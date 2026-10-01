@@ -51,6 +51,10 @@ let consoleConfig = {};
 const SESSION_ID_KEY = "ear.assessment_id";
 const SESSION_TOKEN_KEY = "ear.assessment_token";
 const API_TOKEN_KEY = "ear.api_token";
+const demoGate = document.getElementById("demo-gate");
+const demoGateForm = document.getElementById("demo-gate-form");
+const demoGateError = document.getElementById("demo-gate-error");
+const demoGateBtn = document.getElementById("demo-gate-btn");
 
 function persistSession() {
   try {
@@ -72,7 +76,21 @@ function persistApiToken() {
   }
 }
 
+function showDemoGate() {
+  if (demoGate) demoGate.hidden = false;
+}
+
+function hideDemoGate() {
+  if (demoGate) demoGate.hidden = true;
+  if (demoGateError) demoGateError.textContent = "";
+}
+
 function ensureApiToken() {
+  if (consoleConfig.demo_email_gate) {
+    if (apiAccessToken) return true;
+    showDemoGate();
+    return false;
+  }
   if (!consoleConfig.api_auth_required) return true;
   if (apiAccessToken) return true;
   const entered = window.prompt("This console requires an API token (API_ACCESS_TOKEN).");
@@ -147,7 +165,13 @@ assessForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const payload = formPayload(new FormData(assessForm));
   if (!ensureApiToken()) {
-    addMessage("assistant", "Assessment not sent: an API token is required.", true);
+    addMessage(
+      "assistant",
+      consoleConfig.demo_email_gate
+        ? "Assessment not sent: enter your email to open the demo."
+        : "Assessment not sent: an API token is required.",
+      true,
+    );
     return;
   }
   assessBtn.disabled = true;
@@ -199,7 +223,13 @@ suggestionsEl.addEventListener("click", (event) => {
 async function sendChat(message) {
   if (!message || chatInput.disabled) return;
   if (!ensureApiToken()) {
-    addMessage("assistant", "Chat not sent: an API token is required.", true);
+    addMessage(
+      "assistant",
+      consoleConfig.demo_email_gate
+        ? "Chat not sent: enter your email to open the demo."
+        : "Chat not sent: an API token is required.",
+      true,
+    );
     return;
   }
   chatInput.value = "";
@@ -222,31 +252,46 @@ async function sendChat(message) {
   }
 }
 
+function paintConsoleStatus() {
+  const health = consoleConfig;
+  const enabled = (health.frameworks && health.frameworks.enabled) || [];
+  llmStatus.textContent = health.llm_enabled
+    ? "Full mode: answers are grounded in this session's report."
+    : "Simulator mode: rule-based triage without a language model. Suitable for demos.";
+  if (health.jira_outbound) {
+    llmStatus.textContent += " Jira outbound is active.";
+  } else {
+    llmStatus.textContent += " Jira tickets are dry-run until credentials are configured.";
+  }
+  if (enabled.length) {
+    llmStatus.textContent += ` Frameworks: ${enabled.join(", ")}.`;
+  }
+  if (health.demo_email_gate) {
+    llmStatus.textContent += " Email required to open the demo.";
+  } else if (health.api_auth_required) {
+    llmStatus.textContent += " API token required.";
+  }
+}
+
 /** Load health banner and restore session assessment on page load */
 async function initHealth() {
   restoreSessionFromStorage();
   try {
     consoleConfig = await getJson("/api/v1/config");
-    const health = consoleConfig;
-    const enabled = (health.frameworks && health.frameworks.enabled) || [];
-    llmStatus.textContent = health.llm_enabled
-      ? "Full mode: answers are grounded in this session's report."
-      : "Simulator mode: rule-based triage without a language model. Suitable for demos.";
-    if (health.jira_outbound) {
-      llmStatus.textContent += " Jira outbound is active.";
-    } else {
-      llmStatus.textContent += " Jira tickets are dry-run until credentials are configured.";
-    }
-    if (enabled.length) {
-      llmStatus.textContent += ` Frameworks: ${enabled.join(", ")}.`;
-    }
-    if (health.api_auth_required) {
-      llmStatus.textContent += " API token required.";
-    }
   } catch {
     llmStatus.textContent = "Cannot connect to the console. Check that the service is running.";
     return;
   }
+  if (consoleConfig.demo_email_gate && !apiAccessToken) {
+    showDemoGate();
+    return;
+  }
+  hideDemoGate();
+  await finishInit();
+}
+
+async function finishInit() {
+  paintConsoleStatus();
   try {
     if (!currentAssessmentId) return;
     const restored = await getJson(`/api/v1/assessments/${encodeURIComponent(currentAssessmentId)}`);
@@ -260,6 +305,39 @@ async function initHealth() {
   } catch {
     clearPersistedSession();
   }
+}
+
+if (demoGateForm) {
+  demoGateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = String(new FormData(demoGateForm).get("email") || "").trim();
+    if (demoGateError) demoGateError.textContent = "";
+    if (demoGateBtn) demoGateBtn.disabled = true;
+    try {
+      const response = await fetch("/api/v1/demo-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data.detail;
+        if (demoGateError) {
+          demoGateError.textContent =
+            typeof detail === "string" ? detail : "Could not save that email.";
+        }
+        return;
+      }
+      apiAccessToken = data.access_token || null;
+      persistApiToken();
+      hideDemoGate();
+      await finishInit();
+    } catch {
+      if (demoGateError) demoGateError.textContent = "Could not reach the console.";
+    } finally {
+      if (demoGateBtn) demoGateBtn.disabled = false;
+    }
+  });
 }
 
 /** Tabs keep the report readable without three nested scroll areas */
@@ -864,9 +942,10 @@ async function postJson(url, body) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 && consoleConfig.api_auth_required) {
+    if (response.status === 401 && (consoleConfig.api_auth_required || consoleConfig.demo_email_gate)) {
       apiAccessToken = null;
       persistApiToken();
+      if (consoleConfig.demo_email_gate) showDemoGate();
     }
     const detail = data.detail;
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail) || response.statusText);
